@@ -388,6 +388,79 @@
                         </StackPanel>
                     </Grid>
                 </TabItem>
+
+                <!-- SEKME 3: PROFİLLER -->
+                <TabItem Header="Profiller">
+                    <Grid Background="#202225" Margin="20">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="20"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+
+                        <!-- SOL PANEL: Mevcut Profiller -->
+                        <StackPanel Grid.Column="0">
+                            <TextBlock Text="Profillerim" Foreground="White" FontSize="22" FontWeight="Bold" Margin="0,0,0,5"/>
+                            <TextBlock Text="Oynamak istediğin profili seç ve aktif et." Foreground="#B9BBBE" FontSize="12" Margin="0,0,0,15"/>
+
+                            <ListBox x:Name="ProfilesListBox" Height="300" Background="#2F3136" BorderThickness="0" Margin="0,0,0,15">
+                                <ListBox.ItemContainerStyle>
+                                    <Style TargetType="ListBoxItem" BasedOn="{StaticResource SearchCardListBoxItemStyle}"/>
+                                </ListBox.ItemContainerStyle>
+                                <ListBox.ItemTemplate>
+                                    <DataTemplate>
+                                        <Border Background="#36393F" CornerRadius="8" Padding="15" Margin="5">
+                                            <StackPanel>
+                                                <TextBlock Text="{Binding Name}" Foreground="White" FontSize="16" FontWeight="Bold"/>
+                                                <StackPanel Orientation="Horizontal" Margin="0,5,0,0">
+                                                    <Border Background="#7289DA" CornerRadius="4" Padding="5,2" Margin="0,0,10,0">
+                                                        <TextBlock Text="{Binding GameVersion}" Foreground="White" FontSize="11" FontWeight="Bold"/>
+                                                    </Border>
+                                                    <Border Background="#43B581" CornerRadius="4" Padding="5,2">
+                                                        <TextBlock Text="{Binding Loader}" Foreground="White" FontSize="11" FontWeight="Bold"/>
+                                                    </Border>
+                                                </StackPanel>
+                                            </StackPanel>
+                                        </Border>
+                                    </DataTemplate>
+                                </ListBox.ItemTemplate>
+                            </ListBox>
+
+                            <Button x:Name="UseProfileBtn" Content="Seçili Profili Aktif Et" Height="45" Background="#43B581" Foreground="White" FontSize="14" FontWeight="Bold" BorderThickness="0" Click="UseProfileBtn_Click">
+                                <Button.Resources>
+                                    <Style TargetType="Border">
+                                        <Setter Property="CornerRadius" Value="8"/>
+                                    </Style>
+                                </Button.Resources>
+                            </Button>
+                        </StackPanel>
+
+                        <!-- SAĞ PANEL: Yeni Profil Oluşturma -->
+                        <StackPanel Grid.Column="2">
+                            <TextBlock Text="Yeni Profil Oluştur" Foreground="White" FontSize="22" FontWeight="Bold" Margin="0,0,0,5"/>
+                            <TextBlock Text="Modpack'ler veya farklı sürümler için izole alanlar." Foreground="#B9BBBE" FontSize="12" Margin="0,0,0,15"/>
+
+                            <Border Background="#2F3136" CornerRadius="8" Padding="20">
+                                <StackPanel>
+                                    <TextBlock Text="Profil Adı (Örn: Hexxit, Survival)" Foreground="#B9BBBE" FontWeight="Bold" Margin="0,0,0,5"/>
+                                    <TextBox x:Name="NewProfileNameBox" Height="35" FontSize="14" VerticalContentAlignment="Center" Margin="0,0,0,15"/>
+
+                                    <TextBlock Text="Oyun Sürümü" Foreground="#B9BBBE" FontWeight="Bold" Margin="0,0,0,5"/>
+                                    <TextBox x:Name="NewProfileVersionBox" Text="1.20.1" Height="35" FontSize="14" VerticalContentAlignment="Center" Margin="0,0,0,15"/>
+
+                                    <Button x:Name="CreateProfileBtn" Content="Klasör Yarat ve Oluştur" Height="40" Background="#7289DA" Foreground="White" FontSize="14" FontWeight="Bold" BorderThickness="0" Click="CreateProfileBtn_Click">
+                                        <Button.Resources>
+                                            <Style TargetType="Border">
+                                                <Setter Property="CornerRadius" Value="6"/>
+                                            </Style>
+                                        </Button.Resources>
+                                    </Button>
+                                </StackPanel>
+                            </Border>
+                        </StackPanel>
+                    </Grid>
+                </TabItem>
+
             </TabControl>
         </Grid>
     </Grid>

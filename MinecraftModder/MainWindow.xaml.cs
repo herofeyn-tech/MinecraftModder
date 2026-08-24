@@ -14,46 +14,31 @@ using System.Windows.Input;
 using CmlLib.Core;
 using CmlLib.Core.ProcessBuilder;
 using CmlLib.Core.Auth;
-using CmlLib.Core.Auth.Microsoft; // Xbox Girişi İçin Eklendi
+using CmlLib.Core.Auth.Microsoft;
 using CmlLib.Core.ModLoaders.FabricMC;
 
 namespace MinecraftModder
 {
     public partial class MainWindow : Window
     {
-        private const string GameVersion = "1.20.1";
-        private readonly MinecraftPath _gamePath;
+        // ==================== PROFİL VE DİZİN YÖNETİMİ ====================
+        private GameProfile _activeProfile;
+        private MinecraftPath _gamePath;
+        private List<GameProfile> _allProfiles = new List<GameProfile>();
+
         private List<ModrinthHit> _currentHits = new List<ModrinthHit>();
         private string? _preferredFabricLoaderVersion;
 
-        // UI geçişleri sırasında güncel açık olan paketi takip etmek için
+        // UI geçişleri
         private InstalledModpackGroup? _currentOpenGroup;
         private List<IInstalledItem> _lastLoadedItems = new();
 
-        // OTURUM BİLGİSİNİ TUTACAK DEĞİŞKEN
+        // OTURUM BİLGİSİ
         private MSession? _currentSession;
-
-        // MICROSOFT GİRİŞ YÖNETİCİSİ (Beni Hatırla için)
         private JELoginHandler _loginHandler;
 
-        // ==================== PERFORMANS DÜZELTMESİ ====================
-        // Önceden her HTTP isteği için "new HttpClient()" oluşturuluyordu. Bu, her istekte
-        // TCP+TLS el sıkışmasını sıfırdan yaptırıp bağlantı havuzunu (connection pooling)
-        // devre dışı bırakan bilinen bir .NET performans hatasıdır. Artık uygulama boyunca
-        // TEK bir HttpClient paylaşılıyor. Ayrıca zaman aşımını 20 saniyeye indirdik:
-        // ağda gerçek bir sorun varsa uygulama 100 saniye boyunca donmak yerine hızlıca hata verir.
-        //
-        // IPv6 DÜZELTMESİ: Bazı kullanıcıların ağında (bozuk IPv6 yönlendirmesi / MTU sorunu)
-        // Windows önce IPv6 ile bağlanmayı dener, başarısız olur, sonra IPv4'e düşer — bu geçiş
-        // uzun bir gecikmeye (bizim durumumuzda 20 saniyelik timeout'a çarpmaya) sebep olabiliyor.
-        // Bunu her kullanıcının kendi ağ ayarlarından IPv6'yı kapatmasına gerek kalmadan, uygulama
-        // seviyesinde çözüyoruz: ConnectCallback ile DNS'den dönen adresler arasından SADECE IPv4
-        // olanlarını deniyoruz, IPv6'yı hiç denemiyoruz. Böylece "önce dene, sonra vazgeç" gecikmesi
-        // tamamen ortadan kalkıyor.
+        // HTTP İSTEMCİSİ (Performans Düzeltmesi)
         private static readonly HttpClient _httpClient = CreateHttpClient();
-
-        // AsyncImageLoader gibi sınıfların da aynı (IPv4-zorlayan, hızlı) HttpClient'ı
-        // kullanabilmesi için dışarıya açık bir erişim noktası.
         public static HttpClient SharedHttpClient => _httpClient;
 
         private static HttpClient CreateHttpClient()
@@ -67,8 +52,6 @@ namespace MinecraftModder
                         .Where(ip => ip.AddressFamily == AddressFamily.InterNetwork)
                         .ToArray();
 
-                    // Bu makinede gerçekten sadece IPv6 varsa (çok nadir), IPv4'e zorlamak yerine
-                    // normal (IPv6 dahil) bağlantıya izin veriyoruz; yoksa internet hiç çalışmaz.
                     if (ipv4Addresses.Length == 0)
                     {
                         var socket = new Socket(SocketType.Stream, ProtocolType.Tcp);
@@ -107,11 +90,25 @@ namespace MinecraftModder
         public MainWindow()
         {
             InitializeComponent();
-            string desktopPath = Environment.GetFolderPath(Environment.SpecialFolder.Desktop);
-            string targetFolder = Path.Combine(desktopPath, "Oyun Test", ".minecraft_test");
-            _gamePath = new MinecraftPath(targetFolder);
 
-            // Login Handler'ı oluştur
+            // ==================== YENİ PROFİL İZOLASYON SİSTEMİ ====================
+            string desktopPath = Environment.GetFolderPath(Environment.SpecialFolder.Desktop);
+            string baseLauncherFolder = Path.Combine(desktopPath, "MinecraftModder_Profiller");
+            Directory.CreateDirectory(baseLauncherFolder);
+
+            // Şimdilik varsayılan bir "Ana Profil" oluşturup içine hapsediyoruz
+            _activeProfile = new GameProfile
+            {
+                Name = "Ana Profil",
+                GameVersion = "1.20.1",
+                FolderPath = Path.Combine(baseLauncherFolder, "Profil_Ana")
+            };
+            _allProfiles.Add(_activeProfile);
+
+            Directory.CreateDirectory(_activeProfile.FolderPath);
+            _gamePath = new MinecraftPath(_activeProfile.FolderPath);
+            // =========================================================================
+
             _loginHandler = JELoginHandlerBuilder.BuildDefault();
         }
 
@@ -126,7 +123,6 @@ namespace MinecraftModder
                 if (session != null && session.CheckIsValid())
                 {
                     _currentSession = session;
-
                     XboxLoggedOutPanel.Visibility = Visibility.Collapsed;
                     XboxLoggedInPanel.Visibility = Visibility.Visible;
                     XboxRememberedUsername.Text = $"Kayıtlı Hesap: {session.Username}";
@@ -147,16 +143,13 @@ namespace MinecraftModder
         {
             XboxLoginBtn.IsEnabled = false;
             XboxLoginStatus.Text = "Tarayıcıda Microsoft ekranı bekleniyor...";
-
             try
             {
                 var session = await _loginHandler.AuthenticateInteractively();
                 _currentSession = session;
-
                 XboxLoggedOutPanel.Visibility = Visibility.Collapsed;
                 XboxLoggedInPanel.Visibility = Visibility.Visible;
                 XboxRememberedUsername.Text = $"Kayıtlı Hesap: {session.Username}";
-
                 WelcomeText.Text = $"Hoş Geldin, {session.Username}!";
                 SwitchToMainScreen();
             }
@@ -182,12 +175,7 @@ namespace MinecraftModder
 
         private void XboxLogoutBtn_Click(object sender, RoutedEventArgs e)
         {
-            try
-            {
-                _loginHandler.Signout();
-            }
-            catch { }
-
+            try { _loginHandler.Signout(); } catch { }
             _currentSession = null;
             XboxLoggedInPanel.Visibility = Visibility.Collapsed;
             XboxLoggedOutPanel.Visibility = Visibility.Visible;
@@ -202,7 +190,6 @@ namespace MinecraftModder
                 MessageBox.Show("Lütfen bir kullanıcı adı girin!", "Uyarı");
                 return;
             }
-
             _currentSession = MSession.CreateOfflineSession(username);
             WelcomeText.Text = $"Hoş Geldin, {username}!";
             SwitchToMainScreen();
@@ -231,8 +218,9 @@ namespace MinecraftModder
 
             try
             {
-                string facets = Uri.EscapeDataString($"[[\"categories:fabric\"],[\"versions:{GameVersion}\"],[\"project_type:mod\",\"project_type:modpack\"]]");
-                string url = $"https://api.modrinth.com/v2/search?query={Uri.EscapeDataString(query)}&limit=10&facets={facets}";
+                // Sürüm artık sabit değil, aktif profilden geliyor
+                string facets = Uri.EscapeDataString($"[[\"categories:fabric\"],[\"versions:{_activeProfile.GameVersion}\"],[\"project_type:mod\",\"project_type:modpack\"]]");
+                string url = $"https://api.modrinth.com/v2/search?query={Uri.EscapeDataString(query)}&limit=50&facets={facets}";
                 string response = await _httpClient.GetStringAsync(url);
                 var result = JsonSerializer.Deserialize<ModrinthSearchResponse>(response);
 
@@ -248,8 +236,7 @@ namespace MinecraftModder
             }
             catch (TaskCanceledException)
             {
-                // Timeout süresi (20 sn) dolduğunda buraya düşer. Muhtemelen ağ/DNS sorunu var.
-                MessageBox.Show("İstek zaman aşımına uğradı. İnternet bağlantını ya da güvenlik duvarı/antivirüs ayarlarını kontrol et.", "Zaman Aşımı");
+                MessageBox.Show("İstek zaman aşımına uğradı. İnternet bağlantını kontrol et.", "Zaman Aşımı");
                 StatusText.Text = "Arama zaman aşımına uğradı.";
             }
             catch (Exception ex)
@@ -263,10 +250,8 @@ namespace MinecraftModder
         {
             if (ModListBox.SelectedItem is ModrinthHit hit)
             {
-                if (hit.project_type == "modpack")
-                    await InstallModpackAsync(hit);
-                else
-                    await DownloadModAsync(hit);
+                if (hit.project_type == "modpack") await InstallModpackAsync(hit);
+                else await DownloadModAsync(hit);
             }
         }
 
@@ -303,7 +288,7 @@ namespace MinecraftModder
             StatusText.Text = $"{displayName} indiriliyor...";
 
             string loaders = Uri.EscapeDataString("[\"fabric\"]");
-            string gameVersions = Uri.EscapeDataString($"[\"{GameVersion}\"]");
+            string gameVersions = Uri.EscapeDataString($"[\"{_activeProfile.GameVersion}\"]");
             string versionsUrl = $"https://api.modrinth.com/v2/project/{projectId}/version?loaders={loaders}&game_versions={gameVersions}";
 
             string versionsJson = await _httpClient.GetStringAsync(versionsUrl);
@@ -311,7 +296,7 @@ namespace MinecraftModder
 
             if (versions == null || versions.Count == 0 || versions[0].files == null || versions[0].files.Count == 0)
             {
-                skipped.Add($"{displayName} (Fabric + {GameVersion} uyumlu sürüm yok)");
+                skipped.Add($"{displayName} (Fabric + {_activeProfile.GameVersion} uyumlu sürüm yok)");
                 return;
             }
 
@@ -366,7 +351,7 @@ namespace MinecraftModder
                 Directory.CreateDirectory(_gamePath.BasePath);
 
                 string loaders = Uri.EscapeDataString("[\"fabric\"]");
-                string gameVersions = Uri.EscapeDataString($"[\"{GameVersion}\"]");
+                string gameVersions = Uri.EscapeDataString($"[\"{_activeProfile.GameVersion}\"]");
                 string versionsUrl = $"https://api.modrinth.com/v2/project/{hit.project_id}/version?loaders={loaders}&game_versions={gameVersions}";
                 string versionsJson = await _httpClient.GetStringAsync(versionsUrl);
                 var versions = JsonSerializer.Deserialize<List<ModrinthVersion>>(versionsJson);
@@ -427,6 +412,19 @@ namespace MinecraftModder
 
                     ExtractOverridesFolder(archive, "overrides/", _gamePath.BasePath);
                     ExtractOverridesFolder(archive, "client-overrides/", _gamePath.BasePath);
+                    foreach (var entry in archive.Entries)
+                    {
+                        if ((entry.FullName.StartsWith("overrides/mods/", StringComparison.OrdinalIgnoreCase) ||
+                             entry.FullName.StartsWith("client-overrides/mods/", StringComparison.OrdinalIgnoreCase)) &&
+                             entry.FullName.EndsWith(".jar", StringComparison.OrdinalIgnoreCase))
+                        {
+                            string extractedJarName = Path.GetFileName(entry.FullName);
+                            if (!downloadedJars.Contains(extractedJarName))
+                            {
+                                downloadedJars.Add(extractedJarName);
+                            }
+                        }
+                    }
 
                     if (manifest.dependencies != null && manifest.dependencies.TryGetValue("fabric-loader", out var loaderVer))
                         _preferredFabricLoaderVersion = loaderVer;
@@ -482,6 +480,28 @@ namespace MinecraftModder
         private async void RefreshModsBtn_Click(object sender, RoutedEventArgs e)
         {
             await LoadInstalledModsAsync();
+        }
+
+        // Yeni Eklenen: Eksik dosyaları el ile atmak için klasörü aç butonu
+        private void OpenFolderBtn_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                string modsFolder = Path.Combine(_gamePath.BasePath, "mods");
+                if (Directory.Exists(modsFolder))
+                {
+                    System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo()
+                    {
+                        FileName = modsFolder,
+                        UseShellExecute = true,
+                        Verb = "open"
+                    });
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Klasör açılamadı: {ex.Message}", "Hata");
+            }
         }
 
         private async Task LoadInstalledModsAsync()
@@ -697,6 +717,23 @@ namespace MinecraftModder
                 mod.IsEnabled = false;
             }
         }
+        private int GetOptimalRamMb()
+        {
+            try
+            {
+                var gcInfo = GC.GetGCMemoryInfo();
+                long totalRamBytes = gcInfo.TotalAvailableMemoryBytes;
+                int totalRamMb = (int)(totalRamBytes / (1024 * 1024));
+
+                if (totalRamMb > 12000) return 6144;
+                if (totalRamMb > 6000) return 4096;
+                return 2048;
+            }
+            catch
+            {
+                return 2048;
+            }
+        }
 
         private async void DeleteModBtn_Click(object sender, RoutedEventArgs e)
         {
@@ -735,6 +772,83 @@ namespace MinecraftModder
                 await LoadInstalledModsAsync();
             }
         }
+        private async Task EnsureFabricApiAsync(string modsFolder)
+        {
+            try
+            {
+                if (!Directory.Exists(modsFolder)) Directory.CreateDirectory(modsFolder);
+
+                bool hasFabricApi = Directory.GetFiles(modsFolder, "*fabric-api*.jar", SearchOption.TopDirectoryOnly).Length > 0;
+                if (hasFabricApi) return;
+
+                Dispatcher.Invoke(() => StatusText.Text = "Eksik Fabric API indiriliyor...");
+
+                var processedProjects = new HashSet<string>();
+                var downloaded = new List<string>();
+                var skipped = new List<string>();
+
+                await DownloadProjectRecursiveAsync("P7dR8mSH", "Fabric API", modsFolder, processedProjects, downloaded, skipped);
+            }
+            catch { }
+        }
+        // ==================== PROFİL EKRANI İŞLEMLERİ ====================
+
+        private void RefreshProfilesList()
+        {
+            ProfilesListBox.ItemsSource = null;
+            ProfilesListBox.ItemsSource = _allProfiles;
+        }
+
+        private void CreateProfileBtn_Click(object sender, RoutedEventArgs e)
+        {
+            string name = NewProfileNameBox.Text.Trim();
+            string version = NewProfileVersionBox.Text.Trim();
+
+            if (string.IsNullOrEmpty(name) || string.IsNullOrEmpty(version))
+            {
+                MessageBox.Show("Lütfen profil adı ve sürümünü boş bırakmayın!", "Uyarı");
+                return;
+            }
+
+            string safeFolderName = "Profil_" + string.Join("_", name.Split(Path.GetInvalidFileNameChars()));
+
+            string desktopPath = Environment.GetFolderPath(Environment.SpecialFolder.Desktop);
+            string baseLauncherFolder = Path.Combine(desktopPath, "MinecraftModder_Profiller");
+            string fullPath = Path.Combine(baseLauncherFolder, safeFolderName);
+
+            Directory.CreateDirectory(fullPath);
+
+            var newProfile = new GameProfile
+            {
+                Name = name,
+                GameVersion = version,
+                FolderPath = fullPath
+            };
+
+            _allProfiles.Add(newProfile);
+            RefreshProfilesList();
+
+            MessageBox.Show($"'{name}' profili başarıyla oluşturuldu!\nArtık soldaki listeden seçip aktif edebilirsin.", "Başarılı");
+            NewProfileNameBox.Text = "";
+        }
+
+        private void UseProfileBtn_Click(object sender, RoutedEventArgs e)
+        {
+            if (ProfilesListBox.SelectedItem is GameProfile selectedProfile)
+            {
+                _activeProfile = selectedProfile;
+                _gamePath = new MinecraftPath(_activeProfile.FolderPath);
+
+                string username = _currentSession != null ? _currentSession.Username : "Oyuncu";
+                WelcomeText.Text = $"Hoş Geldin, {username}! | Aktif Profil: {_activeProfile.Name} ({_activeProfile.GameVersion})";
+
+                MessageBox.Show($"'{_activeProfile.Name}' profili aktif edildi.\nİndireceğin tüm modlar ve oynayacağın oyun sadece bu klasörü etkileyecek.", "Profil Değişti");
+            }
+            else
+            {
+                MessageBox.Show("Lütfen aktif etmek için listeden bir profil seçin.", "Uyarı");
+            }
+        }
 
         private async void DownloadBtn_Click(object sender, RoutedEventArgs e)
         {
@@ -751,6 +865,9 @@ namespace MinecraftModder
 
             try
             {
+                StatusText.Text = "Temel kütüphaneler kontrol ediliyor...";
+                string modsFolder = Path.Combine(_gamePath.BasePath, "mods");
+                await EnsureFabricApiAsync(modsFolder);
                 var watcherObject = new MinecraftLauncher(_gamePath);
                 watcherObject.FileProgressChanged += (s, args) =>
                 {
@@ -762,11 +879,10 @@ namespace MinecraftModder
                     });
                 };
 
-                // FabricInstaller de artık paylaşılan HttpClient'ı kullanıyor.
                 var fabricInstaller = new FabricInstaller(_httpClient);
                 string fabricVersionName = !string.IsNullOrEmpty(_preferredFabricLoaderVersion)
-                    ? await fabricInstaller.Install(GameVersion, _preferredFabricLoaderVersion, _gamePath)
-                    : await fabricInstaller.Install(GameVersion, _gamePath);
+                    ? await fabricInstaller.Install(_activeProfile.GameVersion, _preferredFabricLoaderVersion, _gamePath)
+                    : await fabricInstaller.Install(_activeProfile.GameVersion, _gamePath);
 
                 StatusText.Text = "Oyun dosyaları indiriliyor...";
 
@@ -774,7 +890,7 @@ namespace MinecraftModder
                 {
                     return await watcherObject.CreateProcessAsync(fabricVersionName, new MLaunchOption
                     {
-                        MaximumRamMb = 2048,
+                        MaximumRamMb = GetOptimalRamMb(),
                         Session = _currentSession
                     });
                 });
@@ -827,6 +943,15 @@ namespace MinecraftModder
         public string Title { get; set; } = string.Empty;
         public string? IconUrl { get; set; }
         public List<string> InstalledFiles { get; set; } = new List<string>();
+    }
+    public class GameProfile
+    {
+        public string Id { get; set; } = Guid.NewGuid().ToString("N");
+        public string Name { get; set; } = "Yeni Profil";
+        public string GameVersion { get; set; } = "1.20.1";
+        public string Loader { get; set; } = "Fabric"; // İleride FTB veya Forge eklenebilir
+        public string FolderPath { get; set; } = string.Empty;
+        public string? IconUrl { get; set; }
     }
 
     public class ModrinthSearchResponse { public List<ModrinthHit> hits { get; set; } = new(); }
