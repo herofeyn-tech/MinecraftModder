@@ -1,139 +1,95 @@
-using System;
-using System.Collections.Generic;
-using System.Linq;
+using System.Collections.ObjectModel;
+using System.Diagnostics;
 using System.IO;
-using System.IO.Compression;
-using System.Net;
-using System.Net.Sockets;
 using System.Net.Http;
-using System.Text.Json;
-using System.Threading.Tasks;
+using System.Text;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
-using CmlLib.Core;
-using CmlLib.Core.ProcessBuilder;
-using CmlLib.Core.Auth;
-using CmlLib.Core.Auth.Microsoft;
-using CmlLib.Core.ModLoaders.FabricMC;
+using Microsoft.Win32;
+using MinecraftModder.Core;
+using MinecraftModder.Core.Content;
+using MinecraftModder.Core.Install;
+using MinecraftModder.Core.Launch;
+using MinecraftModder.Core.Profiles;
+using MinecraftModder.Core.Settings;
+using MinecraftModder.Core.Util;
 
 namespace MinecraftModder
 {
+    // Bu pencere sadece arayüzdür: tüm iş (indirme, kurulum, profil, başlatma) MinecraftModder.Core'da.
+    // Arayüz yeniden tasarlanırken bu dosya baştan yazılabilir, çekirdeğe dokunmak gerekmez.
     public partial class MainWindow : Window
     {
-        // ==================== PROFİL VE DİZİN YÖNETİMİ ====================
-        private GameProfile _activeProfile;
-        private MinecraftPath _gamePath;
-        private List<GameProfile> _allProfiles = new List<GameProfile>();
+        private static readonly string[] FallbackGameVersions = { "1.21.1", "1.20.1", "1.19.2", "1.18.2", "1.16.5", "1.12.2" };
 
-        private List<ModrinthHit> _currentHits = new List<ModrinthHit>();
-        private string? _preferredFabricLoaderVersion;
+        private readonly LauncherCore _core;
+        private GameProfile _activeProfile = null!;
 
-        // UI geçişleri
-        private InstalledModpackGroup? _currentOpenGroup;
-        private List<IInstalledItem> _lastLoadedItems = new();
+        // Uzun işlemler (kurulum, onarma, oyun hazırlama) aynı anda tek bir tane çalışır.
+        private CancellationTokenSource? _busyCts;
+        private bool _isBusy;
+        private DateTime _lastProgressUpdate;
 
-        // OTURUM BİLGİSİ
-        private MSession? _currentSession;
-        private JELoginHandler _loginHandler;
+        // Arama, kurulum sürerken bile kullanılabilsin diye ayrı yönetilir.
+        private CancellationTokenSource? _searchCts;
+        private SearchRequest? _lastSearch;
+        private readonly ObservableCollection<SearchResultView> _results = new();
 
-        // HTTP İSTEMCİSİ (Performans Düzeltmesi)
-        private static readonly HttpClient _httpClient = CreateHttpClient();
-        public static HttpClient SharedHttpClient => _httpClient;
-
-        private static HttpClient CreateHttpClient()
-        {
-            var socketsHandler = new SocketsHttpHandler
-            {
-                ConnectCallback = async (context, cancellationToken) =>
-                {
-                    var entry = await Dns.GetHostEntryAsync(context.DnsEndPoint.Host, cancellationToken);
-                    var ipv4Addresses = entry.AddressList
-                        .Where(ip => ip.AddressFamily == AddressFamily.InterNetwork)
-                        .ToArray();
-
-                    if (ipv4Addresses.Length == 0)
-                    {
-                        var socket = new Socket(SocketType.Stream, ProtocolType.Tcp);
-                        socket.NoDelay = true;
-                        await socket.ConnectAsync(context.DnsEndPoint, cancellationToken);
-                        return new NetworkStream(socket, ownsSocket: true);
-                    }
-
-                    Exception? lastError = null;
-                    foreach (var ip in ipv4Addresses)
-                    {
-                        var socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
-                        socket.NoDelay = true;
-                        try
-                        {
-                            await socket.ConnectAsync(ip, context.DnsEndPoint.Port, cancellationToken);
-                            return new NetworkStream(socket, ownsSocket: true);
-                        }
-                        catch (Exception ex)
-                        {
-                            lastError = ex;
-                            socket.Dispose();
-                        }
-                    }
-
-                    throw lastError ?? new InvalidOperationException($"{context.DnsEndPoint.Host} adresine bağlanılamadı.");
-                }
-            };
-
-            var client = new HttpClient(socketsHandler);
-            client.DefaultRequestHeaders.Add("User-Agent", "MinecraftModderApp/1.0");
-            client.Timeout = TimeSpan.FromSeconds(20);
-            return client;
-        }
+        private Process? _gameProcess;
+        private bool _suppressProfileCombo;
+        private bool _uiReady;
 
         public MainWindow()
         {
             InitializeComponent();
+            _core = LauncherCore.Create();
 
-            // ==================== YENİ PROFİL İZOLASYON SİSTEMİ ====================
-            string desktopPath = Environment.GetFolderPath(Environment.SpecialFolder.Desktop);
-            string baseLauncherFolder = Path.Combine(desktopPath, "MinecraftModder_Profiller");
-            Directory.CreateDirectory(baseLauncherFolder);
-
-            // Şimdilik varsayılan bir "Ana Profil" oluşturup içine hapsediyoruz
-            _activeProfile = new GameProfile
+            KindCombo.ItemsSource = new[]
             {
-                Name = "Ana Profil",
-                GameVersion = "1.20.1",
-                FolderPath = Path.Combine(baseLauncherFolder, "Profil_Ana")
+                new KindOption(ContentKind.Mod, "Modlar"),
+                new KindOption(ContentKind.Modpack, "Mod Paketleri"),
+                new KindOption(ContentKind.ShaderPack, "Shader'lar"),
+                new KindOption(ContentKind.ResourcePack, "Kaynak Paketleri"),
             };
-            _allProfiles.Add(_activeProfile);
-
-            Directory.CreateDirectory(_activeProfile.FolderPath);
-            _gamePath = new MinecraftPath(_activeProfile.FolderPath);
-            // =========================================================================
-
-            _loginHandler = JELoginHandlerBuilder.BuildDefault();
+            NewProfileLoaderCombo.ItemsSource = new[]
+            {
+                new LoaderOption(ModLoader.Fabric, "Fabric (önerilen)"),
+                new LoaderOption(ModLoader.Forge, "Forge"),
+                new LoaderOption(ModLoader.NeoForge, "NeoForge"),
+                new LoaderOption(ModLoader.Quilt, "Quilt"),
+                new LoaderOption(ModLoader.Vanilla, "Vanilla (modsuz)"),
+            };
+            NewProfileLoaderCombo.SelectedIndex = 0;
+            ResultsList.ItemsSource = _results;
         }
 
-        // ==================== GİRİŞ EKRANI İŞLEMLERİ ====================
+        private GameProfile ActiveProfile => _activeProfile;
+        private AppSettings Settings => _core.Settings.Current;
+        private ContentKind SelectedKind => (KindCombo.SelectedItem as KindOption)?.Kind ?? ContentKind.Mod;
+
+        // ==================== AÇILIŞ VE GİRİŞ ====================
 
         private async void Window_Loaded(object sender, RoutedEventArgs e)
         {
+            _activeProfile = _core.EnsureActiveProfile();
+            RefreshProfiles();
+            LoadSettingsIntoUi();
+            OfflineUsernameBox.Text = Settings.LastOfflineUsername ?? "Oyuncu";
+            _uiReady = true;
+            KindCombo.SelectedIndex = 0;
+            _ = LoadGameVersionsAsync();
+
             XboxLoginStatus.Text = "Kayıtlı oturum kontrol ediliyor...";
-            try
+            var session = await _core.Accounts.TrySilentLoginAsync();
+            if (session != null)
             {
-                var session = await _loginHandler.AuthenticateSilently();
-                if (session != null && session.CheckIsValid())
-                {
-                    _currentSession = session;
-                    XboxLoggedOutPanel.Visibility = Visibility.Collapsed;
-                    XboxLoggedInPanel.Visibility = Visibility.Visible;
-                    XboxRememberedUsername.Text = $"Kayıtlı Hesap: {session.Username}";
-                    XboxLoginStatus.Text = "Önceki oturum başarıyla bulundu!";
-                }
-                else
-                {
-                    XboxLoginStatus.Text = "";
-                }
+                XboxLoggedOutPanel.Visibility = Visibility.Collapsed;
+                XboxLoggedInPanel.Visibility = Visibility.Visible;
+                XboxRememberedUsername.Text = $"Kayıtlı Hesap: {session.Username}";
+                XboxLoginStatus.Text = "Önceki oturum bulundu!";
             }
-            catch
+            else
             {
                 XboxLoginStatus.Text = "";
             }
@@ -145,18 +101,13 @@ namespace MinecraftModder
             XboxLoginStatus.Text = "Tarayıcıda Microsoft ekranı bekleniyor...";
             try
             {
-                var session = await _loginHandler.AuthenticateInteractively();
-                _currentSession = session;
-                XboxLoggedOutPanel.Visibility = Visibility.Collapsed;
-                XboxLoggedInPanel.Visibility = Visibility.Visible;
-                XboxRememberedUsername.Text = $"Kayıtlı Hesap: {session.Username}";
-                WelcomeText.Text = $"Hoş Geldin, {session.Username}!";
+                await _core.Accounts.LoginInteractivelyAsync();
                 SwitchToMainScreen();
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"Xbox girişi başarısız oldu: {ex.Message}", "Giriş Hatası", MessageBoxButton.OK, MessageBoxImage.Error);
                 XboxLoginStatus.Text = "Giriş yapılamadı.";
+                MessageBox.Show($"Microsoft girişi başarısız oldu: {ex.Message}", "Giriş Hatası", MessageBoxButton.OK, MessageBoxImage.Error);
             }
             finally
             {
@@ -166,801 +117,786 @@ namespace MinecraftModder
 
         private void XboxContinueBtn_Click(object sender, RoutedEventArgs e)
         {
-            if (_currentSession != null)
-            {
-                WelcomeText.Text = $"Hoş Geldin, {_currentSession.Username}!";
-                SwitchToMainScreen();
-            }
+            if (_core.Accounts.Current != null) SwitchToMainScreen();
         }
 
-        private void XboxLogoutBtn_Click(object sender, RoutedEventArgs e)
+        private async void XboxLogoutBtn_Click(object sender, RoutedEventArgs e)
         {
-            try { _loginHandler.Signout(); } catch { }
-            _currentSession = null;
+            await _core.Accounts.SignOutAsync();
             XboxLoggedInPanel.Visibility = Visibility.Collapsed;
             XboxLoggedOutPanel.Visibility = Visibility.Visible;
-            XboxLoginStatus.Text = "Hesap sistemden unutuldu.";
+            XboxLoginStatus.Text = "Hesap unutuldu.";
         }
 
         private void OfflineLoginBtn_Click(object sender, RoutedEventArgs e)
         {
             string username = OfflineUsernameBox.Text.Trim();
-            if (string.IsNullOrEmpty(username))
+            try
             {
-                MessageBox.Show("Lütfen bir kullanıcı adı girin!", "Uyarı");
+                _core.Accounts.UseOffline(username);
+            }
+            catch (ArgumentException ex)
+            {
+                MessageBox.Show(ex.Message, "Kullanıcı adı", MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
             }
-            _currentSession = MSession.CreateOfflineSession(username);
-            WelcomeText.Text = $"Hoş Geldin, {username}!";
+
+            Settings.LastOfflineUsername = username;
+            _core.Settings.Save();
             SwitchToMainScreen();
         }
 
         private void SwitchToMainScreen()
         {
+            var session = _core.Accounts.Current!;
+            WelcomeText.Text = $"Hoş geldin, {session.Username}!";
+            AccountText.Text = session.UserType == "msa" ? "Microsoft hesabı" : "Çevrimdışı hesap";
             LoginScreen.Visibility = Visibility.Collapsed;
             MainScreen.Visibility = Visibility.Visible;
+            _ = SearchAsync(reset: true);
         }
 
-        // ==================== ARAMA VE İNDİRME İŞLEMLERİ ====================
-
-        private async void SearchBtn_Click(object sender, RoutedEventArgs e)
+        private async void SignOutBtn_Click(object sender, RoutedEventArgs e)
         {
-            string query = SearchBox.Text.Trim();
-            if (string.IsNullOrEmpty(query))
+            if (_core.Accounts.Current?.UserType == "msa") await _core.Accounts.SignOutAsync();
+            XboxLoggedInPanel.Visibility = Visibility.Collapsed;
+            XboxLoggedOutPanel.Visibility = Visibility.Visible;
+            XboxLoginStatus.Text = "";
+            MainScreen.Visibility = Visibility.Collapsed;
+            LoginScreen.Visibility = Visibility.Visible;
+        }
+
+        // ==================== OYNA ====================
+
+        private async void PlayBtn_Click(object sender, RoutedEventArgs e)
+        {
+            if (_gameProcess is { HasExited: false })
             {
-                MessageBox.Show("Lütfen aranacak bir mod adı yazın!", "Uyarı");
+                StatusText.Text = "Oyun zaten açık.";
                 return;
             }
 
-            StatusText.Text = "Modrinth üzerinde aranıyor...";
-            ModListBox.ItemsSource = null;
-            _currentHits.Clear();
-
-            try
+            var session = _core.Accounts.Current;
+            if (session == null)
             {
-                // Sürüm artık sabit değil, aktif profilden geliyor
-                string facets = Uri.EscapeDataString($"[[\"categories:fabric\"],[\"versions:{_activeProfile.GameVersion}\"],[\"project_type:mod\",\"project_type:modpack\"]]");
-                string url = $"https://api.modrinth.com/v2/search?query={Uri.EscapeDataString(query)}&limit=50&facets={facets}";
-                string response = await _httpClient.GetStringAsync(url);
-                var result = JsonSerializer.Deserialize<ModrinthSearchResponse>(response);
-
-                if (result?.hits == null || result.hits.Count == 0)
-                {
-                    StatusText.Text = "Bu isimde / bu sürümle uyumlu mod bulunamadı.";
-                    return;
-                }
-
-                _currentHits = result.hits;
-                StatusText.Text = $"{result.hits.Count} sonuç bulundu! İndirmek için çift tıkla.";
-                ModListBox.ItemsSource = _currentHits;
-            }
-            catch (TaskCanceledException)
-            {
-                MessageBox.Show("İstek zaman aşımına uğradı. İnternet bağlantını kontrol et.", "Zaman Aşımı");
-                StatusText.Text = "Arama zaman aşımına uğradı.";
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show($"Arama hatası: {ex.Message}", "Hata");
-                StatusText.Text = "Arama başarısız.";
-            }
-        }
-
-        private async void ModListBox_MouseDoubleClick(object sender, MouseButtonEventArgs e)
-        {
-            if (ModListBox.SelectedItem is ModrinthHit hit)
-            {
-                if (hit.project_type == "modpack") await InstallModpackAsync(hit);
-                else await DownloadModAsync(hit);
-            }
-        }
-
-        private async Task DownloadModAsync(ModrinthHit hit)
-        {
-            try
-            {
-                string modsFolder = Path.Combine(_gamePath.BasePath, "mods");
-                Directory.CreateDirectory(modsFolder);
-
-                var processedProjects = new HashSet<string>();
-                var downloaded = new List<string>();
-                var skipped = new List<string>();
-
-                await DownloadProjectRecursiveAsync(hit.project_id, hit.title, modsFolder, processedProjects, downloaded, skipped);
-
-                string summary = $"İndirilenler:\n- {string.Join("\n- ", downloaded)}";
-                if (skipped.Count > 0) summary += $"\n\nUyumsuzluk sebebiyle atlananlar:\n- {string.Join("\n- ", skipped)}";
-
-                StatusText.Text = $"{hit.title} ve bağımlılıkları indirildi!";
-                MessageBox.Show(summary, "İndirme Tamamlandı");
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show($"Mod indirme hatası: {ex.Message}", "Hata");
-                StatusText.Text = "Mod indirme başarısız.";
-            }
-        }
-
-        private async Task DownloadProjectRecursiveAsync(string projectId, string displayName, string modsFolder, HashSet<string> processedProjects, List<string> downloaded, List<string> skipped)
-        {
-            if (processedProjects.Contains(projectId)) return;
-            processedProjects.Add(projectId);
-            StatusText.Text = $"{displayName} indiriliyor...";
-
-            string loaders = Uri.EscapeDataString("[\"fabric\"]");
-            string gameVersions = Uri.EscapeDataString($"[\"{_activeProfile.GameVersion}\"]");
-            string versionsUrl = $"https://api.modrinth.com/v2/project/{projectId}/version?loaders={loaders}&game_versions={gameVersions}";
-
-            string versionsJson = await _httpClient.GetStringAsync(versionsUrl);
-            var versions = JsonSerializer.Deserialize<List<ModrinthVersion>>(versionsJson);
-
-            if (versions == null || versions.Count == 0 || versions[0].files == null || versions[0].files.Count == 0)
-            {
-                skipped.Add($"{displayName} (Fabric + {_activeProfile.GameVersion} uyumlu sürüm yok)");
+                SignOutBtn_Click(sender, e);
                 return;
             }
 
-            var chosenVersion = versions[0];
-            var file = chosenVersion.files.Find(f => f.primary) ?? chosenVersion.files[0];
+            var profile = ActiveProfile;
+            Process? process = null;
+            bool ok = await RunBusyAsync($"'{profile.Name}' hazırlanıyor...",
+                async (progress, ct) => process = await _core.Launcher.LaunchAsync(profile, session, progress, ct));
+            if (!ok || process == null) return;
 
-            if (!file.filename.EndsWith(".jar", StringComparison.OrdinalIgnoreCase))
+            _gameProcess = process;
+            var startedAt = DateTimeOffset.Now;
+            PlayBtn.IsEnabled = false;
+            PlayBtn.Content = "Oyun açık";
+            StatusText.Text = $"İyi oyunlar! ({profile.Name})";
+
+            process.EnableRaisingEvents = true;
+            process.Exited += (_, _) => Dispatcher.Invoke(() => OnGameExited(profile, process, startedAt));
+            if (process.HasExited) OnGameExited(profile, process, startedAt);
+            else if (Settings.HideLauncherWhilePlaying) WindowState = WindowState.Minimized;
+        }
+
+        private void OnGameExited(GameProfile profile, Process process, DateTimeOffset startedAt)
+        {
+            if (_gameProcess != process) return;
+            _gameProcess = null;
+            PlayBtn.IsEnabled = !_isBusy;
+            PlayBtn.Content = "▶  OYNA";
+            if (WindowState == WindowState.Minimized) WindowState = WindowState.Normal;
+            Activate();
+
+            int exitCode;
+            try { exitCode = process.ExitCode; } catch { exitCode = 0; }
+            StatusText.Text = "Hazır!";
+            if (exitCode == 0) return;
+
+            string? crashReport = GameLauncher.FindLatestCrashReport(profile, startedAt);
+            string message = $"Oyun beklenmedik şekilde kapandı (kod {exitCode}).\n\n" +
+                             "Genelde sebep uyumsuz ya da bozuk bir moddur. 'Kurulu' sekmesindeki 'Onar' butonunu dene; " +
+                             "sorun sürerse en son kurduğun modu kapatıp tekrar aç.";
+            if (crashReport == null)
             {
-                skipped.Add($"{displayName} (mod jar dosyası değil)");
+                MessageBox.Show(message, "Oyun kapandı", MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
             }
 
-            string destPath = Path.Combine(modsFolder, file.filename);
-            byte[] data = await _httpClient.GetByteArrayAsync(file.url);
-            await File.WriteAllBytesAsync(destPath, data);
-            downloaded.Add(displayName);
-
-            if (chosenVersion.dependencies == null) return;
-
-            foreach (var dep in chosenVersion.dependencies)
-            {
-                if (dep.dependency_type != "required") continue;
-
-                string? depProjectId = dep.project_id;
-                if (string.IsNullOrEmpty(depProjectId) && !string.IsNullOrEmpty(dep.version_id))
-                {
-                    string versionInfoJson = await _httpClient.GetStringAsync($"https://api.modrinth.com/v2/version/{dep.version_id}");
-                    var versionInfo = JsonSerializer.Deserialize<ModrinthVersion>(versionInfoJson);
-                    depProjectId = versionInfo?.project_id;
-                }
-                if (string.IsNullOrEmpty(depProjectId)) continue;
-
-                string depName = depProjectId;
-                try
-                {
-                    string projectJson = await _httpClient.GetStringAsync($"https://api.modrinth.com/v2/project/{depProjectId}");
-                    var projectInfo = JsonSerializer.Deserialize<ModrinthHit>(projectJson);
-                    if (projectInfo != null && !string.IsNullOrEmpty(projectInfo.title)) depName = projectInfo.title;
-                }
-                catch { }
-
-                await DownloadProjectRecursiveAsync(depProjectId, depName, modsFolder, processedProjects, downloaded, skipped);
-            }
+            if (MessageBox.Show(message + "\n\nÇökme raporunu açmak ister misin?", "Oyun kapandı",
+                    MessageBoxButton.YesNo, MessageBoxImage.Warning) == MessageBoxResult.Yes)
+                OpenPath(crashReport);
         }
 
-        private async Task InstallModpackAsync(ModrinthHit hit)
+        // ==================== KEŞFET / ARA ====================
+
+        private void KindCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
         {
-            string? tempMrpackPath = null;
+            if (!_uiReady) return;
+            RefreshProviders();
+        }
+
+        private void RefreshProviders()
+        {
+            var current = ProviderCombo.SelectedItem as IContentProvider;
+            var providers = _core.Content.ForKind(SelectedKind).ToList();
+            ProviderCombo.ItemsSource = providers;
+            ProviderCombo.SelectedItem = providers.Contains(current!) ? current : providers.FirstOrDefault();
+            UpdateSearchHint();
+        }
+
+        private void ProviderCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            if (_uiReady && MainScreen.Visibility == Visibility.Visible) _ = SearchAsync(reset: true);
+        }
+
+        private void SearchBox_KeyDown(object sender, KeyEventArgs e)
+        {
+            if (e.Key == Key.Enter) _ = SearchAsync(reset: true);
+        }
+
+        private void SearchBtn_Click(object sender, RoutedEventArgs e) => _ = SearchAsync(reset: true);
+
+        private void LoadMoreBtn_Click(object sender, RoutedEventArgs e) => _ = SearchAsync(reset: false);
+
+        private void UpdateSearchHint()
+        {
+            SearchHintText.Text = SelectedKind switch
+            {
+                ContentKind.Modpack => "Mod paketleri kendi yeni profillerine kurulur; mevcut profilin bozulmaz. Arama boşken en popülerler gösterilir.",
+                ContentKind.Mod when !ActiveProfile.Loader.SupportsMods() =>
+                    $"'{ActiveProfile.Name}' bir Vanilla profili; mod kurmak için Profiller sekmesinden Fabric profili seç ya da oluştur.",
+                _ => $"Sadece '{ActiveProfile.Name}' ({ActiveProfile.DisplayVersion}) ile uyumlu sonuçlar gösteriliyor. Arama boşken en popülerler gelir."
+            };
+        }
+
+        private async Task SearchAsync(bool reset)
+        {
+            if (ProviderCombo.SelectedItem is not IContentProvider provider) return;
+            if (!reset && _lastSearch == null) return;
+
+            _searchCts?.Cancel();
+            var cts = _searchCts = new CancellationTokenSource();
+
+            var kind = SelectedKind;
+            var request = reset
+                ? new SearchRequest
+                {
+                    Query = SearchBox.Text.Trim(),
+                    Kind = kind,
+                    GameVersion = kind == ContentKind.Modpack ? null : ActiveProfile.GameVersion,
+                    Loader = kind == ContentKind.Mod ? ActiveProfile.Loader : null,
+                    Limit = 30
+                }
+                : _lastSearch! with { Offset = _lastSearch.Offset + _lastSearch.Limit };
+
+            if (reset)
+            {
+                _results.Clear();
+                LoadMoreBtn.Visibility = Visibility.Collapsed;
+            }
+            if (!_isBusy) StatusText.Text = $"{provider.DisplayName} üzerinde aranıyor...";
+
+            SearchPage page;
             try
             {
-                StatusText.Text = $"{hit.title} modpack'i indiriliyor...";
-                Directory.CreateDirectory(_gamePath.BasePath);
-
-                string loaders = Uri.EscapeDataString("[\"fabric\"]");
-                string gameVersions = Uri.EscapeDataString($"[\"{_activeProfile.GameVersion}\"]");
-                string versionsUrl = $"https://api.modrinth.com/v2/project/{hit.project_id}/version?loaders={loaders}&game_versions={gameVersions}";
-                string versionsJson = await _httpClient.GetStringAsync(versionsUrl);
-                var versions = JsonSerializer.Deserialize<List<ModrinthVersion>>(versionsJson);
-
-                if (versions == null || versions.Count == 0 || versions[0].files.Count == 0)
-                {
-                    MessageBox.Show($"Uygun modpack sürümü bulunamadı.", "Uyarı");
-                    return;
-                }
-
-                var chosenVersion = versions[0];
-                var mrpackFileInfo = chosenVersion.files.Find(f => f.filename.EndsWith(".mrpack", StringComparison.OrdinalIgnoreCase)) ?? chosenVersion.files[0];
-
-                byte[] mrpackData = await _httpClient.GetByteArrayAsync(mrpackFileInfo.url);
-                tempMrpackPath = Path.Combine(Path.GetTempPath(), $"{hit.slug}_{Guid.NewGuid():N}.mrpack");
-                await File.WriteAllBytesAsync(tempMrpackPath, mrpackData);
-
-                using (var archive = ZipFile.OpenRead(tempMrpackPath))
-                {
-                    var indexEntry = archive.GetEntry("modrinth.index.json");
-                    if (indexEntry == null) return;
-
-                    MrpackManifest? manifest;
-                    using (var stream = indexEntry.Open())
-                    using (var reader = new StreamReader(stream))
-                    {
-                        manifest = JsonSerializer.Deserialize<MrpackManifest>(await reader.ReadToEndAsync());
-                    }
-
-                    if (manifest == null || manifest.files.Count == 0) return;
-
-                    int total = manifest.files.Count;
-                    int done = 0;
-                    List<string> downloadedJars = new List<string>();
-
-                    foreach (var mf in manifest.files)
-                    {
-                        if (mf.env != null && string.Equals(mf.env.client, "unsupported", StringComparison.OrdinalIgnoreCase)) continue;
-                        if (mf.downloads == null || mf.downloads.Count == 0) continue;
-
-                        string destPath = Path.Combine(_gamePath.BasePath, mf.path.Replace('/', Path.DirectorySeparatorChar));
-                        string? destDir = Path.GetDirectoryName(destPath);
-                        if (!string.IsNullOrEmpty(destDir)) Directory.CreateDirectory(destDir);
-
-                        byte[] fileData = await _httpClient.GetByteArrayAsync(mf.downloads[0]);
-                        await File.WriteAllBytesAsync(destPath, fileData);
-
-                        if (destPath.EndsWith(".jar", StringComparison.OrdinalIgnoreCase))
-                        {
-                            downloadedJars.Add(Path.GetFileName(destPath));
-                        }
-
-                        done++;
-                        StatusText.Text = $"Modpack dosyaları... ({done}/{total})";
-                        DownloadProgressBar.Maximum = total;
-                        DownloadProgressBar.Value = done;
-                    }
-
-                    ExtractOverridesFolder(archive, "overrides/", _gamePath.BasePath);
-                    ExtractOverridesFolder(archive, "client-overrides/", _gamePath.BasePath);
-                    foreach (var entry in archive.Entries)
-                    {
-                        if ((entry.FullName.StartsWith("overrides/mods/", StringComparison.OrdinalIgnoreCase) ||
-                             entry.FullName.StartsWith("client-overrides/mods/", StringComparison.OrdinalIgnoreCase)) &&
-                             entry.FullName.EndsWith(".jar", StringComparison.OrdinalIgnoreCase))
-                        {
-                            string extractedJarName = Path.GetFileName(entry.FullName);
-                            if (!downloadedJars.Contains(extractedJarName))
-                            {
-                                downloadedJars.Add(extractedJarName);
-                            }
-                        }
-                    }
-
-                    if (manifest.dependencies != null && manifest.dependencies.TryGetValue("fabric-loader", out var loaderVer))
-                        _preferredFabricLoaderVersion = loaderVer;
-
-                    string metaFolder = Path.Combine(_gamePath.BasePath, "modpacks_meta");
-                    Directory.CreateDirectory(metaFolder);
-                    var meta = new InstalledModpackMeta
-                    {
-                        Title = hit.title,
-                        IconUrl = hit.icon_url,
-                        InstalledFiles = downloadedJars
-                    };
-                    string safeTitle = string.Join("_", hit.title.Split(Path.GetInvalidFileNameChars()));
-                    string metaPath = Path.Combine(metaFolder, $"{safeTitle}.json");
-                    await File.WriteAllTextAsync(metaPath, JsonSerializer.Serialize(meta, new JsonSerializerOptions { WriteIndented = true }));
-
-                    StatusText.Text = $"{hit.title} modpack'i kuruldu!";
-                    MessageBox.Show($"'{hit.title}' kuruldu.\n{done} dosya indirildi.", "Başarılı");
-                }
+                page = await provider.SearchAsync(request, cts.Token);
+            }
+            catch (OperationCanceledException) when (cts.IsCancellationRequested)
+            {
+                return;
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"Modpack kurulum hatası: {ex.Message}", "Hata");
+                if (!_isBusy) StatusText.Text = "Arama başarısız: " + FriendlyMessage(ex);
+                return;
             }
-            finally
-            {
-                if (tempMrpackPath != null) try { File.Delete(tempMrpackPath); } catch { }
-            }
-        }
+            if (cts.IsCancellationRequested) return;
 
-        private void ExtractOverridesFolder(ZipArchive archive, string prefix, string destRoot)
-        {
-            foreach (var entry in archive.Entries)
-            {
-                if (!entry.FullName.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) continue;
-                string relative = entry.FullName.Substring(prefix.Length);
-                if (string.IsNullOrEmpty(relative) || entry.FullName.EndsWith("/")) continue;
+            _lastSearch = request;
+            foreach (var item in page.Items) _results.Add(new SearchResultView(item, IsInstalled(item)));
+            LoadMoreBtn.Visibility = page.HasMore ? Visibility.Visible : Visibility.Collapsed;
 
-                string destPath = Path.Combine(destRoot, relative.Replace('/', Path.DirectorySeparatorChar));
-                string? destDir = Path.GetDirectoryName(destPath);
-                if (!string.IsNullOrEmpty(destDir)) Directory.CreateDirectory(destDir);
-                entry.ExtractToFile(destPath, overwrite: true);
+            if (!_isBusy)
+            {
+                StatusText.Text = _results.Count == 0
+                    ? "Sonuç bulunamadı. Farklı bir kelime ya da kaynak dene."
+                    : $"{_results.Count} sonuç gösteriliyor. Kurmak için 'Kur'a bas.";
             }
         }
 
-        // ==================== KURULU MODLAR SEKMESİ ====================
-
-        private async void MainTabControl_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        private bool IsInstalled(ContentItem item)
         {
-            if (MainTabControl.SelectedIndex == 1) await LoadInstalledModsAsync();
+            if (item.Kind == ContentKind.Modpack)
+                return _core.Profiles.All.Any(p => p.Source?.ProviderId == item.ProviderId && p.Source.ProjectId == item.Id);
+            return ContentInstaller.IsInstalled(ActiveProfile, item);
         }
 
-        private async void RefreshModsBtn_Click(object sender, RoutedEventArgs e)
+        private async void InstallItemBtn_Click(object sender, RoutedEventArgs e)
         {
-            await LoadInstalledModsAsync();
+            if (sender is Button { Tag: SearchResultView view }) await InstallAsync(view);
         }
 
-        // Yeni Eklenen: Eksik dosyaları el ile atmak için klasörü aç butonu
-        private void OpenFolderBtn_Click(object sender, RoutedEventArgs e)
+        private async void ResultsList_MouseDoubleClick(object sender, MouseButtonEventArgs e)
         {
-            try
-            {
-                string modsFolder = Path.Combine(_gamePath.BasePath, "mods");
-                if (Directory.Exists(modsFolder))
-                {
-                    System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo()
-                    {
-                        FileName = modsFolder,
-                        UseShellExecute = true,
-                        Verb = "open"
-                    });
-                }
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show($"Klasör açılamadı: {ex.Message}", "Hata");
-            }
+            if (ResultsList.SelectedItem is SearchResultView { CanInstall: true } view) await InstallAsync(view);
         }
 
-        private async Task LoadInstalledModsAsync()
+        private async Task InstallAsync(SearchResultView view)
         {
-            InstalledStatusText.Text = "Kurulu modlar taranıyor...";
-            string modsFolder = Path.Combine(_gamePath.BasePath, "mods");
-            string metaFolder = Path.Combine(_gamePath.BasePath, "modpacks_meta");
-
-            var packMetas = new List<InstalledModpackMeta>();
-            if (Directory.Exists(metaFolder))
+            var item = view.Item;
+            if (item.Kind == ContentKind.Modpack)
             {
-                foreach (var file in Directory.GetFiles(metaFolder, "*.json"))
-                {
-                    try
-                    {
-                        var meta = JsonSerializer.Deserialize<InstalledModpackMeta>(File.ReadAllText(file));
-                        if (meta != null) packMetas.Add(meta);
-                    }
-                    catch { }
-                }
-            }
-
-            if (!Directory.Exists(modsFolder))
-            {
-                InstalledModsListBox.ItemsSource = null;
-                InstalledStatusText.Text = "Henüz hiç mod indirilmemiş.";
+                await InstallModpackAsync(view);
                 return;
             }
 
-            var fileEntries = new List<(string FullPath, string CleanFileName, bool Enabled, string Hash)>();
-            foreach (var filePath in Directory.GetFiles(modsFolder))
-            {
-                string fileName = Path.GetFileName(filePath);
-                bool isEnabledJar = fileName.EndsWith(".jar", StringComparison.OrdinalIgnoreCase);
-                bool isDisabledJar = fileName.EndsWith(".jar.disabled", StringComparison.OrdinalIgnoreCase);
-                if (!isEnabledJar && !isDisabledJar) continue;
+            var profile = ActiveProfile;
+            ContentInstallResult? result = null;
+            bool ok = await RunBusyAsync($"{item.Title} kuruluyor...",
+                async (progress, ct) => result = await _core.Installer.InstallAsync(profile, item, progress, ct));
+            if (!ok || result == null) return;
 
-                string cleanName = isDisabledJar ? fileName.Substring(0, fileName.Length - ".disabled".Length) : fileName;
-                string hash = string.Empty;
-                try
-                {
-                    using var sha1 = System.Security.Cryptography.SHA1.Create();
-                    using var stream = File.OpenRead(filePath);
-                    hash = Convert.ToHexString(await Task.Run(() => sha1.ComputeHash(stream))).ToLowerInvariant();
-                }
-                catch { }
-                fileEntries.Add((filePath, cleanName, isEnabledJar, hash));
+            if (result.Installed.Count > 0 || result.AlreadyInstalled.Count > 0) view.MarkInstalled();
+
+            // Her şey yolundaysa pencere açıp kullanıcıyı yormuyoruz; sadece alt barda yazıyor.
+            if (result.Skipped.Count == 0 && result.Warnings.Count == 0)
+            {
+                int extras = result.Installed.Count - 1;
+                StatusText.Text = result.Installed.Count == 0
+                    ? $"{item.Title} zaten kurulu."
+                    : $"✓ {item.Title} kuruldu" + (extras > 0 ? $" (+{extras} gerekli ek)" : "") + $" → {profile.Name}";
+                return;
             }
 
-            var iconByHash = new Dictionary<string, (string Title, string? IconUrl)>();
-            var validHashes = fileEntries.Where(f => !string.IsNullOrEmpty(f.Hash)).Select(f => f.Hash).Distinct().ToList();
+            var text = new StringBuilder();
+            if (result.Installed.Count > 0) text.AppendLine("Kurulanlar:\n• " + string.Join("\n• ", result.Installed) + "\n");
+            if (result.Skipped.Count > 0) text.AppendLine("Kurulamayanlar:\n• " + string.Join("\n• ", result.Skipped.Select(s => $"{s.Title}: {s.Reason}")) + "\n");
+            if (result.Warnings.Count > 0) text.AppendLine("Not:\n• " + string.Join("\n• ", result.Warnings));
+            StatusText.Text = result.Installed.Count > 0 ? $"{item.Title} kuruldu (bazı uyarılar var)." : $"{item.Title} kurulamadı.";
 
-            if (validHashes.Count > 0)
+            var withPage = result.Skipped.FirstOrDefault(s => s.WebUrl != null);
+            if (withPage != null)
             {
-                try
-                {
-                    string requestBody = JsonSerializer.Serialize(new { hashes = validHashes, algorithm = "sha1" });
-                    var response = await _httpClient.PostAsync("https://api.modrinth.com/v2/version_files", new StringContent(requestBody, System.Text.Encoding.UTF8, "application/json"));
-
-                    if (response.IsSuccessStatusCode)
-                    {
-                        var versionMap = JsonSerializer.Deserialize<Dictionary<string, ModrinthVersion>>(await response.Content.ReadAsStringAsync());
-                        if (versionMap != null && versionMap.Count > 0)
-                        {
-                            var projectIds = versionMap.Values.Select(v => v.project_id).Distinct().ToList();
-                            string projectsJson = await _httpClient.GetStringAsync($"https://api.modrinth.com/v2/projects?ids={Uri.EscapeDataString(JsonSerializer.Serialize(projectIds))}");
-                            var projectById = (JsonSerializer.Deserialize<List<ModrinthProject>>(projectsJson) ?? new()).ToDictionary(p => p.id, p => p);
-
-                            foreach (var kvp in versionMap)
-                            {
-                                if (projectById.TryGetValue(kvp.Value.project_id, out var proj))
-                                    iconByHash[kvp.Key] = (proj.title, proj.icon_url);
-                            }
-                        }
-                    }
-                }
-                catch { }
+                if (MessageBox.Show(text + $"\n'{withPage.Title}' sayfasını tarayıcıda açayım mı?", "Kurulum", MessageBoxButton.YesNo, MessageBoxImage.Information) == MessageBoxResult.Yes)
+                    OpenPath(withPage.WebUrl!);
             }
-
-            var allMods = new List<InstalledMod>();
-            foreach (var entry in fileEntries)
+            else
             {
-                string displayName = entry.CleanFileName;
-                string? iconUrl = null;
-                if (!string.IsNullOrEmpty(entry.Hash) && iconByHash.TryGetValue(entry.Hash, out var info))
-                {
-                    displayName = info.Title;
-                    iconUrl = info.IconUrl;
-                }
-
-                allMods.Add(new InstalledMod
-                {
-                    FullPath = entry.FullPath,
-                    DisplayName = displayName,
-                    IsEnabled = entry.Enabled,
-                    IconUrl = iconUrl
-                });
-            }
-
-            var displayItems = new List<IInstalledItem>();
-            foreach (var meta in packMetas)
-            {
-                var group = new InstalledModpackGroup
-                {
-                    DisplayName = meta.Title,
-                    IconUrl = meta.IconUrl
-                };
-
-                foreach (var jarName in meta.InstalledFiles)
-                {
-                    var mod = allMods.FirstOrDefault(m => Path.GetFileName(m.FullPath).Equals(jarName, StringComparison.OrdinalIgnoreCase) ||
-                                                          Path.GetFileName(m.FullPath).Equals(jarName + ".disabled", StringComparison.OrdinalIgnoreCase));
-                    if (mod != null)
-                    {
-                        group.Mods.Add(mod);
-                        allMods.Remove(mod);
-                    }
-                }
-
-                if (group.Mods.Count > 0)
-                {
-                    group.IsEnabled = group.Mods.Any(m => m.IsEnabled);
-                    displayItems.Add(group);
-                }
-            }
-
-            displayItems.AddRange(allMods);
-
-            _lastLoadedItems = displayItems.OrderBy(x => x.DisplayName).ToList();
-            InstalledModsListBox.ItemsSource = _lastLoadedItems;
-
-            if (ModpackDetailView.Visibility == Visibility.Visible && _currentOpenGroup != null)
-            {
-                var updatedGroup = _lastLoadedItems.OfType<InstalledModpackGroup>().FirstOrDefault(g => g.DisplayName == _currentOpenGroup.DisplayName);
-                if (updatedGroup != null)
-                {
-                    _currentOpenGroup = updatedGroup;
-                    ModpackDetailListBox.ItemsSource = _currentOpenGroup.Mods;
-                }
-                else
-                {
-                    BackToMainInstalledView_Click(null!, null!);
-                }
-            }
-
-            InstalledStatusText.Text = displayItems.Count == 0 ? "Henüz hiç mod indirilmemiş." : $"{displayItems.Count} içerik bulundu.";
-        }
-
-        private void InstalledModsListBox_MouseDoubleClick(object sender, MouseButtonEventArgs e)
-        {
-            if (InstalledModsListBox.SelectedItem is InstalledModpackGroup group)
-            {
-                _currentOpenGroup = group;
-                InstalledMainView.Visibility = Visibility.Collapsed;
-                ModpackDetailView.Visibility = Visibility.Visible;
-                DetailPackTitle.Text = group.DisplayName;
-                ModpackDetailListBox.ItemsSource = group.Mods;
+                MessageBox.Show(text.ToString(), "Kurulum", MessageBoxButton.OK, MessageBoxImage.Information);
             }
         }
 
-        private async void BackToMainInstalledView_Click(object sender, RoutedEventArgs e)
+        private async Task InstallModpackAsync(SearchResultView view)
         {
-            _currentOpenGroup = null;
-            ModpackDetailView.Visibility = Visibility.Collapsed;
-            InstalledMainView.Visibility = Visibility.Visible;
-            await LoadInstalledModsAsync();
+            var item = view.Item;
+            if (_core.Content.Get(item.ProviderId) is not IModpackProvider provider) return;
+
+            if (MessageBox.Show($"'{item.Title}' kendi yeni profiline kurulacak. Mevcut profillerin etkilenmez.\n\nDevam edilsin mi?",
+                    "Mod paketi kur", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes)
+                return;
+
+            ModpackInstallResult? result = null;
+            bool ok = await RunBusyAsync($"{item.Title} kuruluyor...",
+                async (progress, ct) => result = await _core.Modpacks.InstallAsync(provider, item, null, progress, ct));
+            if (!ok || result == null) return;
+
+            view.MarkInstalled();
+            ShowModpackResult(result);
         }
 
-        private async void ModEnabledCheckBox_Click(object sender, RoutedEventArgs e)
+        private void ShowModpackResult(ModpackInstallResult result)
         {
-            if (sender is not CheckBox checkBox || checkBox.Tag is not IInstalledItem item) return;
+            var profile = result.Profile;
+            SetActiveProfile(profile);
 
+            var text = new StringBuilder($"'{profile.Name}' kuruldu ve aktif profil yapıldı.\n{profile.DisplayVersion}\n");
+            if (result.Downloads.Failed.Count > 0)
+            {
+                text.AppendLine($"\n{result.Downloads.Failed.Count} dosya inemedi. 'Kurulu' sekmesinden 'Onar' ile tekrar deneyebilirsin:");
+                foreach (var f in result.Downloads.Failed.Take(5)) text.AppendLine("• " + f.Item.DisplayName);
+                if (result.Downloads.Failed.Count > 5) text.AppendLine("• ...");
+            }
+            else
+            {
+                text.AppendLine("\nOynamak için yukarıdaki OYNA'ya bas. (İlk açılış loader kurulumu yüzünden biraz uzun sürebilir.)");
+            }
+            StatusText.Text = $"✓ {profile.Name} kuruldu.";
+            MessageBox.Show(text.ToString(), "Mod paketi kuruldu", MessageBoxButton.OK,
+                result.Downloads.Success ? MessageBoxImage.Information : MessageBoxImage.Warning);
+        }
+
+        // ==================== KURULU İÇERİK ====================
+
+        private void MainTabControl_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            // İçteki ComboBox/ListBox'ların SelectionChanged olayları da buraya kadar kabarır.
+            if (!ReferenceEquals(e.OriginalSource, MainTabControl)) return;
+
+            switch (MainTabControl.SelectedIndex)
+            {
+                case 1: _ = RefreshInstalledAsync(); break;
+                case 2: RefreshProfiles(); break;
+                case 3: LoadSettingsIntoUi(); break;
+            }
+        }
+
+        private async Task RefreshInstalledAsync()
+        {
+            var profile = ActiveProfile;
+            InstalledTitle.Text = $"{profile.Name} · içerik";
+            InstalledSummary.Text = "Taranıyor...";
+
+            IReadOnlyList<ContentEntry> entries;
             try
             {
-                bool targetState = checkBox.IsChecked ?? false;
-
-                if (item is InstalledMod mod)
-                {
-                    ToggleModFile(mod, targetState);
-                }
-                else if (item is InstalledModpackGroup group)
-                {
-                    foreach (var childMod in group.Mods)
-                    {
-                        ToggleModFile(childMod, targetState);
-                    }
-                }
+                entries = await _core.ProfileContent.RefreshAsync(profile);
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"Durum değiştirilemedi: {ex.Message}", "Hata");
+                InstalledSummary.Text = "Liste okunamadı: " + FriendlyMessage(ex);
+                return;
             }
-            finally
-            {
-                await LoadInstalledModsAsync();
-            }
+            if (profile != ActiveProfile) return;
+
+            var views = entries.Select(e => new ContentEntryView(e, ProfileContentService.IsMissing(profile, e))).ToList();
+            InstalledList.ItemsSource = views;
+            SelectAllCheck.IsChecked = false;
+
+            int mods = entries.Count(e => e.Kind == ContentKind.Mod);
+            int shaders = entries.Count(e => e.Kind == ContentKind.ShaderPack);
+            int packs = entries.Count(e => e.Kind == ContentKind.ResourcePack);
+            int disabled = entries.Count(e => !e.Enabled);
+            int missing = views.Count(v => v.IsMissing);
+
+            var parts = new List<string> { $"{mods} mod" };
+            if (shaders > 0) parts.Add($"{shaders} shader");
+            if (packs > 0) parts.Add($"{packs} kaynak paketi");
+            if (disabled > 0) parts.Add($"{disabled} kapalı");
+            if (missing > 0) parts.Add($"{missing} eksik (Onar'a bas)");
+            var duplicates = ProfileDoctor.FindDuplicates(profile);
+            if (duplicates.Count > 0) parts.Add($"⚠ {duplicates.Count} mod iki kez kurulu");
+            InstalledSummary.Text = string.Join(" · ", parts) + ".  Ctrl/Shift ile birden çok seçebilirsin.";
         }
 
-        private void ToggleModFile(InstalledMod mod, bool targetState)
+        private List<ContentEntry> SelectedEntries() => InstalledList.SelectedItems.Cast<ContentEntryView>().Select(v => v.Entry).ToList();
+
+        private void InstalledList_SelectionChanged(object sender, SelectionChangedEventArgs e)
         {
-            if (targetState && !mod.IsEnabled)
-            {
-                string enabledPath = mod.FullPath.Substring(0, mod.FullPath.Length - ".disabled".Length);
-                File.Move(mod.FullPath, enabledPath);
-                mod.FullPath = enabledPath;
-                mod.IsEnabled = true;
-            }
-            else if (!targetState && mod.IsEnabled)
-            {
-                string disabledPath = mod.FullPath + ".disabled";
-                File.Move(mod.FullPath, disabledPath);
-                mod.FullPath = disabledPath;
-                mod.IsEnabled = false;
-            }
+            int total = InstalledList.Items.Count;
+            SelectAllCheck.IsChecked = total > 0 && InstalledList.SelectedItems.Count == total;
         }
-        private int GetOptimalRamMb()
+
+        private void SelectAllCheck_Click(object sender, RoutedEventArgs e)
         {
+            if (SelectAllCheck.IsChecked == true) InstalledList.SelectAll();
+            else InstalledList.UnselectAll();
+        }
+
+        private async void EnableSelectedBtn_Click(object sender, RoutedEventArgs e) => await SetSelectedEnabledAsync(true);
+        private async void DisableSelectedBtn_Click(object sender, RoutedEventArgs e) => await SetSelectedEnabledAsync(false);
+
+        private async Task SetSelectedEnabledAsync(bool enabled)
+        {
+            var selected = SelectedEntries();
+            if (selected.Count == 0)
+            {
+                StatusText.Text = "Önce listeden seçim yap (Ctrl/Shift ile çoklu seçim).";
+                return;
+            }
+            await ApplyContentChangeAsync(() => _core.ProfileContent.SetEnabled(ActiveProfile, selected, enabled));
+            StatusText.Text = $"{selected.Count} öğe {(enabled ? "açıldı" : "kapatıldı")}.";
+        }
+
+        private async void EntryToggle_Click(object sender, RoutedEventArgs e)
+        {
+            if (sender is not CheckBox { Tag: ContentEntryView view } box) return;
+            bool enabled = box.IsChecked == true;
+            await ApplyContentChangeAsync(() => _core.ProfileContent.SetEnabled(ActiveProfile, new[] { view.Entry }, enabled));
+        }
+
+        private async void DeleteSelectedBtn_Click(object sender, RoutedEventArgs e)
+        {
+            var selected = SelectedEntries();
+            if (selected.Count == 0)
+            {
+                StatusText.Text = "Önce listeden seçim yap (Ctrl/Shift ile çoklu seçim).";
+                return;
+            }
+
+            string warning = selected.Any(s => s.Origin is ContentOrigin.Pack or ContentOrigin.PackOverride)
+                ? "\n\nDikkat: seçtiklerinin bir kısmı mod paketinin parçası; silersen paket düzgün çalışmayabilir. Silmek yerine 'Kapat' daha güvenli."
+                : "";
+            if (MessageBox.Show($"{selected.Count} öğe kalıcı olarak silinsin mi?{warning}", "Emin misin?",
+                    MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes)
+                return;
+
+            await ApplyContentChangeAsync(() => _core.ProfileContent.Remove(ActiveProfile, selected));
+            StatusText.Text = $"{selected.Count} öğe silindi.";
+        }
+
+        private async Task ApplyContentChangeAsync(Action change)
+        {
+            if (_gameProcess is { HasExited: false })
+            {
+                MessageBox.Show("Oyun açıkken modlar değiştirilemez. Önce oyunu kapat.", "Oyun açık", MessageBoxButton.OK, MessageBoxImage.Information);
+                await RefreshInstalledAsync();
+                return;
+            }
+
             try
             {
-                var gcInfo = GC.GetGCMemoryInfo();
-                long totalRamBytes = gcInfo.TotalAvailableMemoryBytes;
-                int totalRamMb = (int)(totalRamBytes / (1024 * 1024));
-
-                if (totalRamMb > 12000) return 6144;
-                if (totalRamMb > 6000) return 4096;
-                return 2048;
-            }
-            catch
-            {
-                return 2048;
-            }
-        }
-
-        private async void DeleteModBtn_Click(object sender, RoutedEventArgs e)
-        {
-            if (sender is not Button button || button.Tag is not IInstalledItem item) return;
-
-            var confirm = MessageBox.Show($"'{item.DisplayName}' kalıcı olarak silinsin mi?", "Emin misin?", MessageBoxButton.YesNo, MessageBoxImage.Warning);
-            if (confirm != MessageBoxResult.Yes) return;
-
-            try
-            {
-                if (item is InstalledMod mod)
-                {
-                    if (File.Exists(mod.FullPath))
-                        File.Delete(mod.FullPath);
-                }
-                else if (item is InstalledModpackGroup group)
-                {
-                    foreach (var childMod in group.Mods)
-                    {
-                        if (File.Exists(childMod.FullPath))
-                            File.Delete(childMod.FullPath);
-                    }
-
-                    string safeTitle = string.Join("_", group.DisplayName.Split(Path.GetInvalidFileNameChars()));
-                    string metaPath = Path.Combine(_gamePath.BasePath, "modpacks_meta", $"{safeTitle}.json");
-                    if (File.Exists(metaPath))
-                        File.Delete(metaPath);
-                }
+                change();
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"Silinemedi: {ex.Message}", "Hata");
+                MessageBox.Show(FriendlyMessage(ex), "Değiştirilemedi", MessageBoxButton.OK, MessageBoxImage.Warning);
             }
-            finally
-            {
-                await LoadInstalledModsAsync();
-            }
+            await RefreshInstalledAsync();
         }
-        private async Task EnsureFabricApiAsync(string modsFolder)
+
+        private async void RepairBtn_Click(object sender, RoutedEventArgs e)
         {
+            var profile = ActiveProfile;
+            RepairReport? report = null;
+            bool ok = await RunBusyAsync("Dosyalar kontrol ediliyor...",
+                async (progress, ct) => report = await _core.Doctor.VerifyAndRepairAsync(profile, progress, ct));
+            await RefreshInstalledAsync();
+            if (!ok || report == null) return;
+
+            if (report.IsHealthy)
+            {
+                StatusText.Text = $"✓ Her şey yolunda! {report.Checked} dosya kontrol edildi.";
+                return;
+            }
+
+            var text = new StringBuilder();
+            if (report.Repaired > 0) text.AppendLine($"✓ {report.Repaired} bozuk/eksik dosya yeniden indirildi.\n");
+            if (report.Failed.Count > 0) text.AppendLine("İndirilemeyenler:\n• " + string.Join("\n• ", report.Failed.Take(8)) + "\n");
+            if (report.Unrepairable.Count > 0) text.AppendLine("Kaynağı bilinmeyen eksik dosyalar (elle eklenmiş olabilir):\n• " + string.Join("\n• ", report.Unrepairable.Take(8)) + "\n");
+            if (report.Duplicates.Count > 0) text.AppendLine("İki kez kurulu modlar (birini kapat ya da sil):\n• " + string.Join("\n• ", report.Duplicates));
+            StatusText.Text = report.Repaired > 0 ? $"✓ {report.Repaired} dosya onarıldı." : "Kontrol tamamlandı.";
+            MessageBox.Show(text.ToString(), "Mod Doktoru", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+
+        private void OpenModsFolderBtn_Click(object sender, RoutedEventArgs e)
+        {
+            string mods = Path.Combine(ActiveProfile.GameDirectory, "mods");
+            Directory.CreateDirectory(mods);
+            OpenPath(mods);
+        }
+
+        private async void RefreshInstalledBtn_Click(object sender, RoutedEventArgs e) => await RefreshInstalledAsync();
+
+        // ==================== PROFİLLER ====================
+
+        private void RefreshProfiles()
+        {
+            var all = _core.Profiles.All;
+            ProfilesList.ItemsSource = all.Select(p => new ProfileView(p, p.Id == ActiveProfile.Id)).ToList();
+
+            _suppressProfileCombo = true;
+            ActiveProfileCombo.ItemsSource = all;
+            ActiveProfileCombo.SelectedItem = all.FirstOrDefault(p => p.Id == ActiveProfile.Id);
+            _suppressProfileCombo = false;
+        }
+
+        private void SetActiveProfile(GameProfile profile)
+        {
+            bool changed = profile.Id != _activeProfile?.Id;
+            _activeProfile = profile;
+            _core.SetActiveProfile(profile);
+            RefreshProfiles();
+            UpdateSearchHint();
+            UpdateRamInfo();
+
+            // Uyumluluk süzgeci (sürüm/loader) değişti; mod sonuçlarını yeni profile göre yenile.
+            if (changed && SelectedKind != ContentKind.Modpack && MainScreen.Visibility == Visibility.Visible) _ = SearchAsync(reset: true);
+            if (MainTabControl.SelectedIndex == 1) _ = RefreshInstalledAsync();
+        }
+
+        private void ActiveProfileCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            if (_suppressProfileCombo || ActiveProfileCombo.SelectedItem is not GameProfile profile || profile.Id == ActiveProfile.Id) return;
+            if (_isBusy)
+            {
+                StatusText.Text = "İşlem sürerken profil değiştirilemez.";
+                RefreshProfiles();
+                return;
+            }
+            SetActiveProfile(profile);
+            StatusText.Text = $"Aktif profil: {profile.Name}";
+        }
+
+        private GameProfile? SelectedProfile => (ProfilesList.SelectedItem as ProfileView)?.Profile;
+
+        private void UseProfileBtn_Click(object sender, RoutedEventArgs e)
+        {
+            if (SelectedProfile is not { } profile)
+            {
+                StatusText.Text = "Önce listeden bir profil seç.";
+                return;
+            }
+            SetActiveProfile(profile);
+            StatusText.Text = $"Aktif profil: {profile.Name}";
+        }
+
+        private void ProfilesList_MouseDoubleClick(object sender, MouseButtonEventArgs e) => UseProfileBtn_Click(sender, e);
+
+        private void OpenProfileFolderBtn_Click(object sender, RoutedEventArgs e)
+        {
+            var profile = SelectedProfile ?? ActiveProfile;
+            Directory.CreateDirectory(profile.GameDirectory);
+            OpenPath(profile.GameDirectory);
+        }
+
+        private void DeleteProfileBtn_Click(object sender, RoutedEventArgs e)
+        {
+            if (SelectedProfile is not { } profile)
+            {
+                StatusText.Text = "Önce listeden silinecek profili seç.";
+                return;
+            }
+            if (_isBusy || (_gameProcess is { HasExited: false } && profile.Id == ActiveProfile.Id))
+            {
+                StatusText.Text = "İşlem sürerken ya da oyun açıkken profil silinemez.";
+                return;
+            }
+
+            bool insideLauncher = profile.GameDirectory.StartsWith(_core.Paths.InstancesDir, StringComparison.OrdinalIgnoreCase);
+            string detail = insideLauncher
+                ? "Profilin klasörü, içindeki modlar ve DÜNYALARIN (kayıtların) da silinecek!"
+                : $"Profil listeden kaldırılacak; klasörü ({profile.GameDirectory}) yerinde bırakılacak.";
+            if (MessageBox.Show($"'{profile.Name}' silinsin mi?\n\n{detail}", "Profili sil",
+                    MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes)
+                return;
+
             try
             {
-                if (!Directory.Exists(modsFolder)) Directory.CreateDirectory(modsFolder);
-
-                bool hasFabricApi = Directory.GetFiles(modsFolder, "*fabric-api*.jar", SearchOption.TopDirectoryOnly).Length > 0;
-                if (hasFabricApi) return;
-
-                Dispatcher.Invoke(() => StatusText.Text = "Eksik Fabric API indiriliyor...");
-
-                var processedProjects = new HashSet<string>();
-                var downloaded = new List<string>();
-                var skipped = new List<string>();
-
-                await DownloadProjectRecursiveAsync("P7dR8mSH", "Fabric API", modsFolder, processedProjects, downloaded, skipped);
+                _core.Profiles.Delete(profile, deleteGameFiles: true);
             }
-            catch { }
-        }
-        // ==================== PROFİL EKRANI İŞLEMLERİ ====================
+            catch (Exception ex)
+            {
+                MessageBox.Show("Profil klasörü tamamen silinemedi: " + ex.Message, "Hata", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
 
-        private void RefreshProfilesList()
-        {
-            ProfilesListBox.ItemsSource = null;
-            ProfilesListBox.ItemsSource = _allProfiles;
+            if (profile.Id == ActiveProfile.Id) SetActiveProfile(_core.EnsureActiveProfile());
+            else RefreshProfiles();
+            StatusText.Text = $"'{profile.Name}' silindi.";
         }
 
         private void CreateProfileBtn_Click(object sender, RoutedEventArgs e)
         {
             string name = NewProfileNameBox.Text.Trim();
-            string version = NewProfileVersionBox.Text.Trim();
+            string version = NewProfileVersionCombo.Text.Trim();
+            var loader = (NewProfileLoaderCombo.SelectedItem as LoaderOption)?.Loader ?? ModLoader.Fabric;
 
-            if (string.IsNullOrEmpty(name) || string.IsNullOrEmpty(version))
+            if (name.Length == 0 || version.Length == 0)
             {
-                MessageBox.Show("Lütfen profil adı ve sürümünü boş bırakmayın!", "Uyarı");
+                MessageBox.Show("Profil adı ve Minecraft sürümü boş olamaz.", "Eksik bilgi", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+            if (NewProfileVersionCombo.ItemsSource is IEnumerable<string> known && known.Any() && !known.Contains(version))
+            {
+                MessageBox.Show($"'{version}' diye bir Minecraft sürümü bulunamadı. Listeden seçebilirsin.", "Sürüm", MessageBoxButton.OK, MessageBoxImage.Information);
                 return;
             }
 
-            string safeFolderName = "Profil_" + string.Join("_", name.Split(Path.GetInvalidFileNameChars()));
-
-            string desktopPath = Environment.GetFolderPath(Environment.SpecialFolder.Desktop);
-            string baseLauncherFolder = Path.Combine(desktopPath, "MinecraftModder_Profiller");
-            string fullPath = Path.Combine(baseLauncherFolder, safeFolderName);
-
-            Directory.CreateDirectory(fullPath);
-
-            var newProfile = new GameProfile
-            {
-                Name = name,
-                GameVersion = version,
-                FolderPath = fullPath
-            };
-
-            _allProfiles.Add(newProfile);
-            RefreshProfilesList();
-
-            MessageBox.Show($"'{name}' profili başarıyla oluşturuldu!\nArtık soldaki listeden seçip aktif edebilirsin.", "Başarılı");
+            var profile = _core.Profiles.Create(name, version, loader);
             NewProfileNameBox.Text = "";
+            SetActiveProfile(profile);
+            StatusText.Text = $"✓ '{profile.Name}' oluşturuldu ve aktif yapıldı. Keşfet'ten mod ekleyebilirsin.";
         }
 
-        private void UseProfileBtn_Click(object sender, RoutedEventArgs e)
+        private async void ImportMrpackBtn_Click(object sender, RoutedEventArgs e)
         {
-            if (ProfilesListBox.SelectedItem is GameProfile selectedProfile)
-            {
-                _activeProfile = selectedProfile;
-                _gamePath = new MinecraftPath(_activeProfile.FolderPath);
+            var dialog = new OpenFileDialog { Filter = "Modrinth paketi (*.mrpack)|*.mrpack", Title = "Paket dosyası seç" };
+            if (dialog.ShowDialog(this) != true) return;
 
-                string username = _currentSession != null ? _currentSession.Username : "Oyuncu";
-                WelcomeText.Text = $"Hoş Geldin, {username}! | Aktif Profil: {_activeProfile.Name} ({_activeProfile.GameVersion})";
-
-                MessageBox.Show($"'{_activeProfile.Name}' profili aktif edildi.\nİndireceğin tüm modlar ve oynayacağın oyun sadece bu klasörü etkileyecek.", "Profil Değişti");
-            }
-            else
-            {
-                MessageBox.Show("Lütfen aktif etmek için listeden bir profil seçin.", "Uyarı");
-            }
+            ModpackInstallResult? result = null;
+            bool ok = await RunBusyAsync("Paket içe aktarılıyor...",
+                async (progress, ct) => result = await _core.Modpacks.InstallLocalMrpackAsync(dialog.FileName, progress, ct));
+            if (ok && result != null) ShowModpackResult(result);
         }
 
-        private async void DownloadBtn_Click(object sender, RoutedEventArgs e)
+        private async Task LoadGameVersionsAsync()
         {
-            if (_currentSession == null)
+            IReadOnlyList<string> versions;
+            try
             {
-                MessageBox.Show("Lütfen önce giriş yapın!", "Hata");
-                return;
+                versions = await _core.GameVersions.GetReleaseVersionsAsync();
+            }
+            catch
+            {
+                versions = FallbackGameVersions;
+            }
+            NewProfileVersionCombo.ItemsSource = versions;
+            NewProfileVersionCombo.Text = Settings.DefaultGameVersion;
+        }
+
+        // ==================== AYARLAR ====================
+
+        private void LoadSettingsIntoUi()
+        {
+            var s = Settings;
+            long total = RamAdvisor.TotalSystemMb();
+            RamSlider.Maximum = Math.Max(1024, RamAdvisor.MaxAllowed(total) / 512 * 512);
+            RamSlider.Value = Math.Min(s.ManualRamMb, RamSlider.Maximum);
+            RamAutoRadio.IsChecked = s.RamMode == RamMode.Auto;
+            RamManualRadio.IsChecked = s.RamMode == RamMode.Manual;
+            ParallelSlider.Value = s.MaxParallelDownloads;
+            HideLauncherCheck.IsChecked = s.HideLauncherWhilePlaying;
+            CurseForgeKeyBox.Text = s.CurseForgeApiKey ?? "";
+            DataFolderText.Text = $"Profiller ve oyun dosyaları: {_core.Paths.Root}";
+            UpdateRamInfo();
+        }
+
+        private void UpdateRamInfo()
+        {
+            if (RamInfoText == null || _activeProfile == null) return;
+            long total = RamAdvisor.TotalSystemMb();
+            bool manual = RamManualRadio.IsChecked == true;
+            RamManualPanel.IsEnabled = manual;
+            RamManualPanel.Opacity = manual ? 1 : 0.4;
+
+            var autoSettings = new AppSettings { RamMode = RamMode.Auto };
+            int auto = RamAdvisor.Decide(autoSettings, ActiveProfile, total);
+            RamInfoText.Text = $"Bilgisayarında {total / 1024.0:0.#} GB RAM var. Otomatik modda '{ActiveProfile.Name}' için {auto / 1024.0:0.#} GB kullanılır " +
+                               "(mod sayısına ve paketin önerisine göre ayarlanır, Windows'a her zaman pay bırakılır).";
+            RamValueText.Text = $"{RamSlider.Value / 1024:0.#} GB";
+        }
+
+        private void RamMode_Changed(object sender, RoutedEventArgs e) => UpdateRamInfo();
+
+        private void RamSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+        {
+            if (RamValueText != null) RamValueText.Text = $"{e.NewValue / 1024:0.#} GB";
+        }
+
+        private void ParallelSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+        {
+            if (ParallelValueText != null) ParallelValueText.Text = $"{(int)e.NewValue} dosya";
+        }
+
+        private void SaveSettingsBtn_Click(object sender, RoutedEventArgs e)
+        {
+            var s = Settings;
+            s.RamMode = RamManualRadio.IsChecked == true ? RamMode.Manual : RamMode.Auto;
+            s.ManualRamMb = (int)RamSlider.Value;
+            s.MaxParallelDownloads = (int)ParallelSlider.Value;
+            s.HideLauncherWhilePlaying = HideLauncherCheck.IsChecked == true;
+            s.CurseForgeApiKey = string.IsNullOrWhiteSpace(CurseForgeKeyBox.Text) ? null : CurseForgeKeyBox.Text.Trim();
+            _core.Settings.Save();
+
+            RefreshProviders(); // CurseForge anahtarı eklendiyse kaynak listesinde görünsün
+            StatusText.Text = "✓ Ayarlar kaydedildi.";
+        }
+
+        private void OpenDataFolderBtn_Click(object sender, RoutedEventArgs e) => OpenPath(_core.Paths.Root);
+
+        // ==================== ORTAK YARDIMCILAR ====================
+
+        private async Task<bool> RunBusyAsync(string startMessage, Func<IProgress<ProgressInfo>, CancellationToken, Task> work)
+        {
+            if (_isBusy)
+            {
+                StatusText.Text = "Önce devam eden işlemin bitmesini bekle.";
+                return false;
             }
 
-            DownloadBtn.IsEnabled = false;
-            StatusText.Text = "Fabric loader kontrol ediliyor...";
-            ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12;
-            ServicePointManager.ServerCertificateValidationCallback += (senderCer, cert, chain, sslPolicyErrors) => true;
+            _isBusy = true;
+            using var cts = _busyCts = new CancellationTokenSource();
+            SetBusyUi(true);
+            var progress = new Progress<ProgressInfo>(ShowProgress);
+            ShowProgress(ProgressInfo.Step(startMessage));
 
             try
             {
-                StatusText.Text = "Temel kütüphaneler kontrol ediliyor...";
-                string modsFolder = Path.Combine(_gamePath.BasePath, "mods");
-                await EnsureFabricApiAsync(modsFolder);
-                var watcherObject = new MinecraftLauncher(_gamePath);
-                watcherObject.FileProgressChanged += (s, args) =>
-                {
-                    Dispatcher.Invoke(() =>
-                    {
-                        StatusText.Text = $"İniyor: {args.Name}";
-                        DownloadProgressBar.Maximum = args.TotalTasks;
-                        DownloadProgressBar.Value = args.ProgressedTasks;
-                    });
-                };
-
-                var fabricInstaller = new FabricInstaller(_httpClient);
-                string fabricVersionName = !string.IsNullOrEmpty(_preferredFabricLoaderVersion)
-                    ? await fabricInstaller.Install(_activeProfile.GameVersion, _preferredFabricLoaderVersion, _gamePath)
-                    : await fabricInstaller.Install(_activeProfile.GameVersion, _gamePath);
-
-                StatusText.Text = "Oyun dosyaları indiriliyor...";
-
-                var process = await Task.Run(async () =>
-                {
-                    return await watcherObject.CreateProcessAsync(fabricVersionName, new MLaunchOption
-                    {
-                        MaximumRamMb = GetOptimalRamMb(),
-                        Session = _currentSession
-                    });
-                });
-
-                StatusText.Text = "Oyun Başlatılıyor!";
-                process.Start();
-                this.Close();
+                await work(progress, cts.Token);
+                return true;
+            }
+            catch (OperationCanceledException) when (cts.IsCancellationRequested)
+            {
+                StatusText.Text = "İşlem iptal edildi.";
+                return false;
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"Bir hata oluştu: {ex.Message}", "Hata!");
-                DownloadBtn.IsEnabled = true;
-                StatusText.Text = "Hata oluştu, tekrar dene.";
+                StatusText.Text = "Bir sorun oluştu.";
+                MessageBox.Show(FriendlyMessage(ex), "Hata", MessageBoxButton.OK, MessageBoxImage.Error);
+                return false;
+            }
+            finally
+            {
+                _isBusy = false;
+                _busyCts = null;
+                SetBusyUi(false);
+            }
+        }
+
+        private void ShowProgress(ProgressInfo info)
+        {
+            if (!_isBusy) return;
+
+            // Binlerce küçük dosyada arayüz donmasın diye saniyede en fazla ~25 güncelleme.
+            var now = DateTime.UtcNow;
+            bool important = info.Fraction is null or >= 1;
+            if (!important && (now - _lastProgressUpdate).TotalMilliseconds < 40) return;
+            _lastProgressUpdate = now;
+
+            StatusText.Text = info.Message;
+            BusyProgress.IsIndeterminate = info.Fraction == null;
+            if (info.Fraction is { } f) BusyProgress.Value = f;
+        }
+
+        private void SetBusyUi(bool busy)
+        {
+            PlayBtn.IsEnabled = !busy && _gameProcess is not { HasExited: false };
+            CreateProfileBtn.IsEnabled = !busy;
+            BusyProgress.Visibility = busy ? Visibility.Visible : Visibility.Hidden;
+            CancelBtn.Visibility = busy ? Visibility.Visible : Visibility.Collapsed;
+            if (!busy) BusyProgress.IsIndeterminate = false;
+        }
+
+        private void CancelBtn_Click(object sender, RoutedEventArgs e)
+        {
+            _busyCts?.Cancel();
+            StatusText.Text = "İptal ediliyor...";
+        }
+
+        private void Window_Closing(object? sender, System.ComponentModel.CancelEventArgs e)
+        {
+            if (!_isBusy) return;
+            if (MessageBox.Show("Bir işlem hâlâ devam ediyor. Yine de kapatılsın mı?", "Çıkış",
+                    MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes)
+            {
+                e.Cancel = true;
+                return;
+            }
+            _busyCts?.Cancel();
+        }
+
+        private static string FriendlyMessage(Exception ex) => ex switch
+        {
+            HttpRequestException => "İnternete bağlanılamadı ya da sunucu cevap vermedi. Bağlantını kontrol edip tekrar dene.",
+            TaskCanceledException or TimeoutException => "Sunucu çok geç cevap verdi. Biraz sonra tekrar dene.",
+            UnsafePathException => ex.Message + " Bu paket güvenli değil, kurulmadı.",
+            IOException when ex.InnerException is HttpRequestException => "İndirme başarısız: internet bağlantını kontrol et.",
+            _ => ex.Message
+        };
+
+        private static void OpenPath(string pathOrUrl)
+        {
+            try
+            {
+                Process.Start(new ProcessStartInfo { FileName = pathOrUrl, UseShellExecute = true });
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Açılamadı: {ex.Message}", "Hata", MessageBoxButton.OK, MessageBoxImage.Warning);
             }
         }
     }
-
-    // ---- Modeller ----
-    public interface IInstalledItem
-    {
-        string DisplayName { get; }
-        string? IconUrl { get; }
-        bool IsPack { get; }
-        bool IsEnabled { get; set; }
-        string SubText { get; }
-    }
-
-    public class InstalledMod : IInstalledItem
-    {
-        public string FullPath { get; set; } = string.Empty;
-        public string DisplayName { get; set; } = string.Empty;
-        public bool IsEnabled { get; set; }
-        public string? IconUrl { get; set; }
-        public bool IsPack => false;
-        public string SubText => string.Empty;
-    }
-
-    public class InstalledModpackGroup : IInstalledItem
-    {
-        public string DisplayName { get; set; } = string.Empty;
-        public string? IconUrl { get; set; }
-        public List<InstalledMod> Mods { get; set; } = new List<InstalledMod>();
-        public bool IsPack => true;
-        public bool IsEnabled { get; set; } = true;
-        public string SubText => $"{Mods.Count} Mod";
-    }
-
-    public class InstalledModpackMeta
-    {
-        public string Title { get; set; } = string.Empty;
-        public string? IconUrl { get; set; }
-        public List<string> InstalledFiles { get; set; } = new List<string>();
-    }
-    public class GameProfile
-    {
-        public string Id { get; set; } = Guid.NewGuid().ToString("N");
-        public string Name { get; set; } = "Yeni Profil";
-        public string GameVersion { get; set; } = "1.20.1";
-        public string Loader { get; set; } = "Fabric"; // İleride FTB veya Forge eklenebilir
-        public string FolderPath { get; set; } = string.Empty;
-        public string? IconUrl { get; set; }
-    }
-
-    public class ModrinthSearchResponse { public List<ModrinthHit> hits { get; set; } = new(); }
-    public class ModrinthHit { public string title { get; set; } = ""; public string description { get; set; } = ""; public string project_id { get; set; } = ""; public string slug { get; set; } = ""; public int downloads { get; set; } public string? icon_url { get; set; } public string project_type { get; set; } = "mod"; }
-    public class ModrinthVersion { public string id { get; set; } = ""; public string project_id { get; set; } = ""; public string version_number { get; set; } = ""; public List<ModrinthFile> files { get; set; } = new(); public List<ModrinthDependency> dependencies { get; set; } = new(); }
-    public class ModrinthFile { public string url { get; set; } = ""; public string filename { get; set; } = ""; public bool primary { get; set; } }
-    public class ModrinthDependency { public string? version_id { get; set; } public string? project_id { get; set; } public string? file_name { get; set; } public string dependency_type { get; set; } = ""; }
-    public class MrpackManifest { public int formatVersion { get; set; } public string game { get; set; } = ""; public string versionId { get; set; } = ""; public string name { get; set; } = ""; public string? summary { get; set; } public List<MrpackFile> files { get; set; } = new(); public Dictionary<string, string> dependencies { get; set; } = new(); }
-    public class MrpackFile { public string path { get; set; } = ""; public List<string> downloads { get; set; } = new(); public long fileSize { get; set; } public MrpackEnv? env { get; set; } }
-    public class MrpackEnv { public string? client { get; set; } public string? server { get; set; } }
-    public class ModrinthProject { public string id { get; set; } = ""; public string title { get; set; } = ""; public string? icon_url { get; set; } }
 }

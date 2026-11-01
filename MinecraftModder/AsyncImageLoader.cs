@@ -1,21 +1,21 @@
-using System;
-using System.Collections.Generic;
+using System.Collections.Concurrent;
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media.Imaging;
+using MinecraftModder.Core.Net;
 
 namespace MinecraftModder
 {
-    // WPF'in Image kontrolü, Source'a direkt bir URL string verildiğinde kendi dahili
-    // (WinINet tabanlı) indirme mekanizmasını kullanır. Bu mekanizma bizim MainWindow'da
-    // düzelttiğimiz IPv4-zorlayan HttpClient'tan HABERSİZDİR — yani mod indirmeleri hızlı
-    // olsa bile ikonlar hâlâ eski (yavaş/IPv6 sorunlu) yoldan iner.
-    //
-    // Bu sınıf, ikonları da MainWindow.SharedHttpClient üzerinden indirip WPF'e "işte hazır
-    // resim" olarak veriyor. Kullanımı: Image.Source yerine AsyncImageLoader.SourceUrl kullan.
+    // WPF'in Image kontrolü, Source'a direkt bir URL verildiğinde kendi (WinINet tabanlı, IPv6 sorunlu)
+    // indirme yolunu kullanır. Bu sınıf ikonları launcher'ın hızlı, IPv4 zorlamalı HttpClient'ı ile indirir.
+    // Kullanımı: Image.Source yerine local:AsyncImageLoader.SourceUrl.
     public static class AsyncImageLoader
     {
+        // İkonlar en fazla 128 px gösteriliyor; tam boyutta (bazen 1024 px) çözmek boşuna RAM yer.
+        private const int DecodePixelWidth = 128;
+        private const int MaxCachedImages = 600;
+
         public static readonly DependencyProperty SourceUrlProperty =
             DependencyProperty.RegisterAttached(
                 "SourceUrl",
@@ -26,8 +26,7 @@ namespace MinecraftModder
         public static string? GetSourceUrl(DependencyObject obj) => (string?)obj.GetValue(SourceUrlProperty);
         public static void SetSourceUrl(DependencyObject obj, string? value) => obj.SetValue(SourceUrlProperty, value);
 
-        // Aynı ikonu tekrar tekrar indirmemek için basit, kalıcı olmayan bir bellek-içi önbellek.
-        private static readonly Dictionary<string, BitmapImage> _cache = new();
+        private static readonly ConcurrentDictionary<string, BitmapImage> _cache = new();
 
         private static async void OnSourceUrlChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
         {
@@ -46,28 +45,34 @@ namespace MinecraftModder
 
             try
             {
-                byte[] data = await MainWindow.SharedHttpClient.GetByteArrayAsync(url);
+                byte[] data = await LauncherHttp.Shared.GetByteArrayAsync(url);
+                var bitmap = await Task.Run(() => Decode(data));
 
-                var bitmap = new BitmapImage();
-                using (var stream = new MemoryStream(data))
-                {
-                    bitmap.BeginInit();
-                    bitmap.CacheOption = BitmapCacheOption.OnLoad; // stream'i hemen kapatabilelim diye tamamen belleğe al
-                    bitmap.StreamSource = stream;
-                    bitmap.EndInit();
-                }
-                bitmap.Freeze(); // farklı öğeler arasında güvenle paylaşılabilsin diye donduruyoruz
-
+                if (_cache.Count >= MaxCachedImages) _cache.Clear();
                 _cache[url] = bitmap;
 
-                // Bu süre zarfında liste değişmiş ve Image başka bir URL istiyor olabilir; kontrol edelim.
-                if (GetSourceUrl(image) == url)
-                    image.Source = bitmap;
+                // Bu sürede liste değişmiş ve Image başka bir URL istiyor olabilir.
+                if (GetSourceUrl(image) == url) image.Source = bitmap;
             }
             catch
             {
-                // İkon indirilemezse (link bozuk, ağ hatası vb.) sessizce boş bırakıyoruz, uygulama çökmesin.
+                // İkon indirilemezse (bozuk link, desteklenmeyen biçim, ağ hatası) boş bırakılır; uygulama çökmesin.
             }
+        }
+
+        private static BitmapImage Decode(byte[] data)
+        {
+            var bitmap = new BitmapImage();
+            using (var stream = new MemoryStream(data))
+            {
+                bitmap.BeginInit();
+                bitmap.CacheOption = BitmapCacheOption.OnLoad;
+                bitmap.DecodePixelWidth = DecodePixelWidth;
+                bitmap.StreamSource = stream;
+                bitmap.EndInit();
+            }
+            bitmap.Freeze(); // farklı thread'ler ve öğeler arasında güvenle paylaşılabilsin
+            return bitmap;
         }
     }
 }

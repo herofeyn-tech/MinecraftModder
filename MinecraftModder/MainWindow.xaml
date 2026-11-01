@@ -5,463 +5,325 @@
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         xmlns:local="clr-namespace:MinecraftModder"
         mc:Ignorable="d"
-        Title="Modlu Başlatıcı" Height="680" Width="800" WindowStartupLocation="CenterScreen"
-        Loaded="Window_Loaded">
-    <Grid Background="#202225">
+        Title="Minecraft Modder" Height="720" Width="1040" MinHeight="600" MinWidth="900"
+        WindowStartupLocation="CenterScreen" Background="{StaticResource BgBrush}"
+        Loaded="Window_Loaded" Closing="Window_Closing">
+    <Grid>
 
         <!-- ==================== GİRİŞ EKRANI ==================== -->
         <Grid x:Name="LoginScreen" Visibility="Visible">
-            <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center" Width="350">
+            <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center" Width="360">
                 <TextBlock Text="MİNECRAFT MODDER" Foreground="White" FontSize="28" FontWeight="ExtraBold" HorizontalAlignment="Center" Margin="0,0,0,10"/>
-                <TextBlock Text="Oynamak için giriş yapmalısın" Foreground="#B9BBBE" FontSize="14" HorizontalAlignment="Center" Margin="0,0,0,40"/>
+                <TextBlock Text="Oynamak için giriş yapmalısın" Foreground="{StaticResource MutedBrush}" FontSize="14" HorizontalAlignment="Center" Margin="0,0,0,36"/>
 
-                <!-- XBOX Girişi (Orijinal) -->
-                <Border Background="#2F3136" CornerRadius="8" Padding="20" Margin="0,0,0,20">
+                <Border Background="{StaticResource PanelBrush}" CornerRadius="8" Padding="20" Margin="0,0,0,20">
                     <StackPanel>
-                        <TextBlock Text="Orijinal Hesap (Premium)" Foreground="White" FontSize="16" FontWeight="Bold" HorizontalAlignment="Center" Margin="0,0,0,15"/>
-
-                        <!-- Durum 1: Giriş Yapılmamış (Normal Buton) -->
-                        <StackPanel x:Name="XboxLoggedOutPanel" Visibility="Visible">
-                            <Button x:Name="XboxLoginBtn" Content="Xbox ile Giriş Yap" Height="40" Background="#107C10" Foreground="White" FontSize="14" FontWeight="Bold" BorderThickness="0" Click="XboxLoginBtn_Click">
-                                <Button.Resources>
-                                    <Style TargetType="Border">
-                                        <Setter Property="CornerRadius" Value="6"/>
-                                    </Style>
-                                </Button.Resources>
-                            </Button>
+                        <TextBlock Text="Orijinal Hesap (Microsoft)" Foreground="White" FontSize="16" FontWeight="Bold" HorizontalAlignment="Center" Margin="0,0,0,15"/>
+                        <StackPanel x:Name="XboxLoggedOutPanel">
+                            <Button x:Name="XboxLoginBtn" Content="Microsoft ile Giriş Yap" Height="40" Margin="0" Background="#107C10" Style="{StaticResource Btn}" Click="XboxLoginBtn_Click"/>
                         </StackPanel>
-
-                        <!-- Durum 2: Hesap Hatırlanmış (Profil & Devam Et Butonu) -->
                         <StackPanel x:Name="XboxLoggedInPanel" Visibility="Collapsed">
-                            <TextBlock x:Name="XboxRememberedUsername" Text="-" Foreground="#43B581" FontSize="16" FontWeight="Bold" HorizontalAlignment="Center" Margin="0,0,0,10"/>
-                            <Button x:Name="XboxContinueBtn" Content="Bu Hesapla Oyna" Height="35" Background="#107C10" Foreground="White" FontSize="14" FontWeight="Bold" BorderThickness="0" Click="XboxContinueBtn_Click" Margin="0,0,0,10">
-                                <Button.Resources>
-                                    <Style TargetType="Border">
-                                        <Setter Property="CornerRadius" Value="6"/>
-                                    </Style>
-                                </Button.Resources>
-                            </Button>
-                            <Button x:Name="XboxLogoutBtn" Content="Farklı Hesapla Gir / Unut" Height="30" Background="#ED4245" Foreground="White" FontSize="12" FontWeight="Bold" BorderThickness="0" Click="XboxLogoutBtn_Click">
-                                <Button.Resources>
-                                    <Style TargetType="Border">
-                                        <Setter Property="CornerRadius" Value="6"/>
-                                    </Style>
-                                </Button.Resources>
-                            </Button>
+                            <TextBlock x:Name="XboxRememberedUsername" Text="-" Foreground="{StaticResource GreenBrush}" FontSize="16" FontWeight="Bold" HorizontalAlignment="Center" Margin="0,0,0,10"/>
+                            <Button x:Name="XboxContinueBtn" Content="Bu Hesapla Oyna" Height="36" Margin="0,0,0,8" Background="#107C10" Style="{StaticResource Btn}" Click="XboxContinueBtn_Click"/>
+                            <Button x:Name="XboxLogoutBtn" Content="Farklı Hesapla Gir / Unut" Height="30" Margin="0" Style="{StaticResource RedBtn}" Click="XboxLogoutBtn_Click"/>
                         </StackPanel>
-
-                        <TextBlock x:Name="XboxLoginStatus" Text="" Foreground="#B9BBBE" FontSize="12" HorizontalAlignment="Center" Margin="0,10,0,0"/>
+                        <TextBlock x:Name="XboxLoginStatus" Text="" Foreground="{StaticResource MutedBrush}" FontSize="12" HorizontalAlignment="Center" Margin="0,10,0,0"/>
                     </StackPanel>
                 </Border>
 
-                <TextBlock Text="VEYA" Foreground="#72767D" FontSize="12" FontWeight="Bold" HorizontalAlignment="Center" Margin="0,0,0,20"/>
+                <TextBlock Text="VEYA" Foreground="{StaticResource DimBrush}" FontSize="12" FontWeight="Bold" HorizontalAlignment="Center" Margin="0,0,0,20"/>
 
-                <!-- Çevrimdışı (Crack) Girişi -->
-                <Border Background="#2F3136" CornerRadius="8" Padding="20">
+                <Border Background="{StaticResource PanelBrush}" CornerRadius="8" Padding="20">
                     <StackPanel>
-                        <TextBlock Text="Çevrimdışı Hesap (Offline)" Foreground="White" FontSize="16" FontWeight="Bold" HorizontalAlignment="Center" Margin="0,0,0,15"/>
-                        <TextBox x:Name="OfflineUsernameBox" Height="35" FontSize="14" VerticalContentAlignment="Center" Margin="0,0,0,10" Tag="Kullanıcı Adı" Text="Oyuncu"/>
-                        <Button x:Name="OfflineLoginBtn" Content="Çevrimdışı Oyna" Height="40" Background="#7289DA" Foreground="White" FontSize="14" FontWeight="Bold" BorderThickness="0" Click="OfflineLoginBtn_Click">
-                            <Button.Resources>
-                                <Style TargetType="Border">
-                                    <Setter Property="CornerRadius" Value="6"/>
-                                </Style>
-                            </Button.Resources>
-                        </Button>
+                        <TextBlock Text="Çevrimdışı Hesap" Foreground="White" FontSize="16" FontWeight="Bold" HorizontalAlignment="Center" Margin="0,0,0,15"/>
+                        <TextBox x:Name="OfflineUsernameBox" Margin="0,0,0,10" Text="Oyuncu" MaxLength="16"/>
+                        <Button x:Name="OfflineLoginBtn" Content="Çevrimdışı Oyna" Height="40" Margin="0" Style="{StaticResource Btn}" Click="OfflineLoginBtn_Click"/>
                     </StackPanel>
                 </Border>
             </StackPanel>
         </Grid>
 
-
-        <!-- ==================== ANA EKRAN (MEVCUT UYGULAMA) ==================== -->
+        <!-- ==================== ANA EKRAN ==================== -->
         <Grid x:Name="MainScreen" Visibility="Collapsed">
-            <TabControl x:Name="MainTabControl" Background="Transparent" BorderThickness="0" Margin="20" SelectionChanged="MainTabControl_SelectionChanged">
-                <TabControl.Resources>
-                    <Style TargetType="TabItem">
-                        <Setter Property="Background" Value="#2F3136"/>
-                        <Setter Property="Foreground" Value="White"/>
-                        <Setter Property="FontSize" Value="14"/>
-                        <Setter Property="FontWeight" Value="Bold"/>
-                        <Setter Property="Template">
-                            <Setter.Value>
-                                <ControlTemplate TargetType="TabItem">
-                                    <Border x:Name="Bd" Background="{TemplateBinding Background}" CornerRadius="6,6,0,0" Padding="16,8" Margin="0,0,2,0">
-                                        <ContentPresenter x:Name="Content" ContentSource="Header" HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                                    </Border>
-                                    <ControlTemplate.Triggers>
-                                        <Trigger Property="IsSelected" Value="True">
-                                            <Setter TargetName="Bd" Property="Background" Value="#7289DA"/>
-                                        </Trigger>
-                                    </ControlTemplate.Triggers>
-                                </ControlTemplate>
-                            </Setter.Value>
-                        </Setter>
-                    </Style>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="*"/>
+                <RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
 
-                    <!-- Kart Stilleri -->
-                    <Style x:Key="SearchCardListBoxItemStyle" TargetType="ListBoxItem">
-                        <Setter Property="Padding" Value="0"/>
-                        <Setter Property="Margin" Value="6"/>
-                        <Setter Property="Background" Value="Transparent"/>
-                        <Setter Property="BorderThickness" Value="0"/>
-                        <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
-                        <Setter Property="Template">
-                            <Setter.Value>
-                                <ControlTemplate TargetType="ListBoxItem">
-                                    <Border x:Name="ItemBorder" Background="{TemplateBinding Background}" CornerRadius="8">
-                                        <ContentPresenter/>
-                                    </Border>
-                                    <ControlTemplate.Triggers>
-                                        <Trigger Property="IsSelected" Value="True">
-                                            <Setter TargetName="ItemBorder" Property="Background" Value="#7289DA"/>
-                                        </Trigger>
-                                        <Trigger Property="IsMouseOver" Value="True">
-                                            <Setter TargetName="ItemBorder" Property="Background" Value="#40444B"/>
-                                        </Trigger>
-                                    </ControlTemplate.Triggers>
-                                </ControlTemplate>
-                            </Setter.Value>
-                        </Setter>
-                    </Style>
+            <!-- Üst bar: kim oynuyor, hangi profil, Oyna -->
+            <Border Grid.Row="0" Background="{StaticResource PanelBrush}" Padding="16,12">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <StackPanel Grid.Column="0" VerticalAlignment="Center">
+                        <TextBlock x:Name="WelcomeText" Text="Hoş Geldin!" Foreground="White" FontSize="18" FontWeight="Bold"/>
+                        <TextBlock x:Name="AccountText" Text="" Style="{StaticResource Muted}"/>
+                    </StackPanel>
+                    <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,16,0">
+                        <TextBlock Text="Profil:" Foreground="{StaticResource MutedBrush}" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                        <ComboBox x:Name="ActiveProfileCombo" Width="280" SelectionChanged="ActiveProfileCombo_SelectionChanged">
+                            <ComboBox.ItemTemplate>
+                                <DataTemplate>
+                                    <TextBlock>
+                                        <Run Text="{Binding Name, Mode=OneWay}" FontWeight="SemiBold"/>
+                                        <Run Text="  "/>
+                                        <Run Text="{Binding DisplayVersion, Mode=OneWay}" Foreground="Gray"/>
+                                    </TextBlock>
+                                </DataTemplate>
+                            </ComboBox.ItemTemplate>
+                        </ComboBox>
+                    </StackPanel>
+                    <Button x:Name="PlayBtn" Grid.Column="2" Content="▶  OYNA" FontSize="17" Padding="34,10" Margin="0" Style="{StaticResource GreenBtn}" Click="PlayBtn_Click"/>
+                </Grid>
+            </Border>
 
-                    <Style x:Key="InstalledCardListBoxItemStyle" TargetType="ListBoxItem">
-                        <Setter Property="Padding" Value="0"/>
-                        <Setter Property="Margin" Value="6"/>
-                        <Setter Property="Background" Value="Transparent"/>
-                        <Setter Property="BorderThickness" Value="0"/>
-                        <Setter Property="Focusable" Value="False"/>
-                        <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
-                        <Setter Property="Template">
-                            <Setter.Value>
-                                <ControlTemplate TargetType="ListBoxItem">
-                                    <ContentPresenter/>
-                                </ControlTemplate>
-                            </Setter.Value>
-                        </Setter>
-                    </Style>
-                </TabControl.Resources>
+            <TabControl x:Name="MainTabControl" Grid.Row="1" Background="Transparent" BorderThickness="0" Margin="16,12,16,8" SelectionChanged="MainTabControl_SelectionChanged">
 
-                <!-- SEKME 1: MOD ARA -->
-                <TabItem Header="Mod Ara">
-                    <Grid Background="#202225">
-                        <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center" Width="600">
-                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,0,0,15">
-                                <TextBlock x:Name="WelcomeText" Foreground="White" FontSize="22" FontWeight="Bold" Margin="0,0,10,0" Text="Hoş Geldin!"/>
-                            </StackPanel>
+                <!-- SEKME 1: KEŞFET / ARA -->
+                <TabItem Header="Keşfet">
+                    <DockPanel Background="{StaticResource BgBrush}" Margin="0,10,0,0">
+                        <Grid DockPanel.Dock="Top" Margin="0,0,0,6">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="150"/>
+                                <ColumnDefinition Width="220"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <ComboBox x:Name="KindCombo" Grid.Column="0" Margin="0,0,8,0" SelectionChanged="KindCombo_SelectionChanged"/>
+                            <ComboBox x:Name="ProviderCombo" Grid.Column="1" Margin="0,0,8,0" DisplayMemberPath="DisplayName" SelectionChanged="ProviderCombo_SelectionChanged"/>
+                            <TextBox x:Name="SearchBox" Grid.Column="2" Margin="0,0,8,0" KeyDown="SearchBox_KeyDown"/>
+                            <Button x:Name="SearchBtn" Grid.Column="3" Content="Ara" Margin="0" Style="{StaticResource Btn}" Click="SearchBtn_Click"/>
+                        </Grid>
+                        <TextBlock x:Name="SearchHintText" DockPanel.Dock="Top" Style="{StaticResource Muted}" Margin="2,0,0,8"/>
+                        <Button x:Name="LoadMoreBtn" DockPanel.Dock="Bottom" Content="Daha fazla göster" HorizontalAlignment="Center" Margin="0,8,0,0" Style="{StaticResource GrayBtn}" Visibility="Collapsed" Click="LoadMoreBtn_Click"/>
 
-                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,0,0,15">
-                                <TextBox x:Name="SearchBox" Width="400" Height="35" FontSize="14" VerticalContentAlignment="Center" Margin="0,0,10,0"/>
-                                <Button x:Name="SearchBtn" Content="Mod Ara" Width="90" Height="35" Background="#7289DA" Foreground="White" BorderThickness="0" Click="SearchBtn_Click">
-                                    <Button.Resources>
-                                        <Style TargetType="Border">
-                                            <Setter Property="CornerRadius" Value="6"/>
-                                        </Style>
-                                    </Button.Resources>
-                                </Button>
-                            </StackPanel>
-
-                            <ListBox x:Name="ModListBox" Height="270" Width="600" Margin="0,0,0,15" Background="#2F3136" BorderThickness="0" ScrollViewer.HorizontalScrollBarVisibility="Disabled" MouseDoubleClick="ModListBox_MouseDoubleClick">
-                                <ListBox.ItemsPanel>
-                                    <ItemsPanelTemplate>
-                                        <WrapPanel Orientation="Horizontal"/>
-                                    </ItemsPanelTemplate>
-                                </ListBox.ItemsPanel>
-                                <ListBox.ItemContainerStyle>
-                                    <Style TargetType="ListBoxItem" BasedOn="{StaticResource SearchCardListBoxItemStyle}"/>
-                                </ListBox.ItemContainerStyle>
-                                <ListBox.ItemTemplate>
-                                    <DataTemplate>
-                                        <Border Width="110" Height="130" Padding="8">
-                                            <Grid>
-                                                <StackPanel>
-                                                    <Border Width="64" Height="64" CornerRadius="6" ClipToBounds="True" HorizontalAlignment="Center" Background="#202225">
-                                                        <Image local:AsyncImageLoader.SourceUrl="{Binding icon_url}" Stretch="UniformToFill"/>
-                                                    </Border>
-                                                    <TextBlock Text="{Binding title}" Foreground="White" FontSize="11" TextWrapping="Wrap" TextAlignment="Center" TextTrimming="CharacterEllipsis" MaxHeight="45" Margin="0,6,0,0"/>
-                                                </StackPanel>
-                                                <Border Background="#FAA61A" CornerRadius="4" Padding="4,1" HorizontalAlignment="Left" VerticalAlignment="Top" Margin="4">
-                                                    <Border.Style>
-                                                        <Style TargetType="Border">
-                                                            <Setter Property="Visibility" Value="Collapsed"/>
-                                                            <Style.Triggers>
-                                                                <DataTrigger Binding="{Binding project_type}" Value="modpack">
-                                                                    <Setter Property="Visibility" Value="Visible"/>
-                                                                </DataTrigger>
-                                                            </Style.Triggers>
-                                                        </Style>
-                                                    </Border.Style>
-                                                    <TextBlock Text="PACK" FontSize="8" FontWeight="Bold" Foreground="Black"/>
-                                                </Border>
-                                            </Grid>
+                        <ListBox x:Name="ResultsList" Background="{StaticResource PanelBrush}" BorderThickness="0" Padding="6"
+                                 ScrollViewer.HorizontalScrollBarVisibility="Disabled" ItemContainerStyle="{StaticResource CardItem}"
+                                 MouseDoubleClick="ResultsList_MouseDoubleClick">
+                            <ListBox.ItemsPanel>
+                                <ItemsPanelTemplate>
+                                    <WrapPanel Orientation="Horizontal"/>
+                                </ItemsPanelTemplate>
+                            </ListBox.ItemsPanel>
+                            <ListBox.ItemTemplate>
+                                <DataTemplate>
+                                    <Grid Width="150" Height="206" Margin="10" ToolTip="{Binding Item.Description}">
+                                        <StackPanel>
+                                            <Border Width="72" Height="72" CornerRadius="8" ClipToBounds="True" Background="{StaticResource BgBrush}">
+                                                <Image local:AsyncImageLoader.SourceUrl="{Binding Item.IconUrl}" Stretch="UniformToFill"/>
+                                            </Border>
+                                            <TextBlock Text="{Binding Item.Title}" Foreground="White" FontSize="12" FontWeight="SemiBold" TextWrapping="Wrap" TextAlignment="Center" TextTrimming="CharacterEllipsis" MaxHeight="34" Margin="0,8,0,2"/>
+                                            <TextBlock Text="{Binding Subtitle}" Foreground="{StaticResource MutedBrush}" FontSize="10" TextAlignment="Center" TextTrimming="CharacterEllipsis"/>
+                                        </StackPanel>
+                                        <Border Background="{StaticResource OrangeBrush}" CornerRadius="4" Padding="5,1" HorizontalAlignment="Left" VerticalAlignment="Top"
+                                                Visibility="{Binding PackBadgeVisibility}">
+                                            <TextBlock Text="PACK" FontSize="9" FontWeight="Bold" Foreground="Black"/>
                                         </Border>
-                                    </DataTemplate>
-                                </ListBox.ItemTemplate>
-                            </ListBox>
-
-                            <TextBlock x:Name="StatusText" Text="Oynamaya Hazır!" Foreground="#B9BBBE" FontSize="14" HorizontalAlignment="Center" Margin="0,0,0,15" TextTrimming="CharacterEllipsis" MaxWidth="500"/>
-                            <ProgressBar x:Name="DownloadProgressBar" Height="20" Minimum="0" Maximum="100" Margin="0,0,0,15"/>
-                            <Button x:Name="DownloadBtn" Content="Oyunu Başlat ve Modları Yükle" Width="250" Height="45" FontSize="15" FontWeight="Bold" Background="#43B581" Foreground="White" BorderThickness="0" Click="DownloadBtn_Click">
-                                <Button.Resources>
-                                    <Style TargetType="Border">
-                                        <Setter Property="CornerRadius" Value="8"/>
-                                    </Style>
-                                </Button.Resources>
-                            </Button>
-                        </StackPanel>
-                    </Grid>
+                                        <Button VerticalAlignment="Bottom" Margin="0" Padding="6,5" Content="{Binding ActionText}" Tag="{Binding}"
+                                                IsEnabled="{Binding CanInstall}" Style="{StaticResource GreenBtn}" Click="InstallItemBtn_Click"/>
+                                    </Grid>
+                                </DataTemplate>
+                            </ListBox.ItemTemplate>
+                        </ListBox>
+                    </DockPanel>
                 </TabItem>
 
-                <!-- SEKME 2: KURULU MODLAR -->
-                <TabItem Header="Kurulu Modlar">
-                    <Grid Background="#202225">
-
-                        <!-- ANA LİSTE GÖRÜNÜMÜ -->
-                        <StackPanel x:Name="InstalledMainView" Width="640" Margin="0,20,0,0" HorizontalAlignment="Center">
-                            <TextBlock Text="Kurulu Modlar ve Paketler" Foreground="White" FontSize="20" FontWeight="Bold" HorizontalAlignment="Center" Margin="0,0,0,5"/>
-                            <TextBlock Text="Paketlere çift tıklayarak içindeki modları görebilirsin." Foreground="#B9BBBE" FontSize="12" HorizontalAlignment="Center" Margin="0,0,0,10"/>
-
-                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,0,0,10">
-                                <Button x:Name="RefreshModsBtn" Content="Listeyi Yenile" Width="130" Height="32" Background="#7289DA" Foreground="White" BorderThickness="0" Margin="0,0,10,0" Click="RefreshModsBtn_Click">
-                                    <Button.Resources>
-                                        <Style TargetType="Border">
-                                            <Setter Property="CornerRadius" Value="6"/>
-                                        </Style>
-                                    </Button.Resources>
-                                </Button>
-                                <TextBlock x:Name="InstalledStatusText" Text="" Foreground="#B9BBBE" FontSize="12" VerticalAlignment="Center"/>
-                            </StackPanel>
-
-                            <ListBox x:Name="InstalledModsListBox" Height="440" Width="640" Margin="0,0,0,15" Background="#2F3136" BorderThickness="0" ScrollViewer.HorizontalScrollBarVisibility="Disabled" MouseDoubleClick="InstalledModsListBox_MouseDoubleClick">
-                                <ListBox.ItemsPanel>
-                                    <ItemsPanelTemplate>
-                                        <WrapPanel Orientation="Horizontal"/>
-                                    </ItemsPanelTemplate>
-                                </ListBox.ItemsPanel>
-                                <ListBox.ItemContainerStyle>
-                                    <Style TargetType="ListBoxItem" BasedOn="{StaticResource SearchCardListBoxItemStyle}"/>
-                                </ListBox.ItemContainerStyle>
-                                <ListBox.ItemTemplate>
-                                    <DataTemplate>
-                                        <Border Width="118" Height="168" Background="#36393F" CornerRadius="8" Padding="8">
-                                            <Grid>
-                                                <Grid.RowDefinitions>
-                                                    <RowDefinition Height="*"/>
-                                                    <RowDefinition Height="Auto"/>
-                                                </Grid.RowDefinitions>
-
-                                                <StackPanel Grid.Row="0">
-                                                    <Border Width="64" Height="64" CornerRadius="6" ClipToBounds="True" HorizontalAlignment="Center" Background="#202225">
-                                                        <Border.Style>
-                                                            <Style TargetType="Border">
-                                                                <Setter Property="Opacity" Value="1"/>
-                                                                <Style.Triggers>
-                                                                    <DataTrigger Binding="{Binding IsEnabled}" Value="False">
-                                                                        <Setter Property="Opacity" Value="0.35"/>
-                                                                    </DataTrigger>
-                                                                </Style.Triggers>
-                                                            </Style>
-                                                        </Border.Style>
-                                                        <Image local:AsyncImageLoader.SourceUrl="{Binding IconUrl}" Stretch="UniformToFill"/>
-                                                    </Border>
-                                                    <TextBlock Text="{Binding DisplayName}" FontSize="11" TextWrapping="Wrap" TextAlignment="Center" TextTrimming="CharacterEllipsis" MaxHeight="45" Margin="0,6,0,0">
-                                                        <TextBlock.Style>
-                                                            <Style TargetType="TextBlock">
-                                                                <Setter Property="Foreground" Value="White"/>
-                                                                <Style.Triggers>
-                                                                    <DataTrigger Binding="{Binding IsEnabled}" Value="False">
-                                                                        <Setter Property="Foreground" Value="#72767D"/>
-                                                                    </DataTrigger>
-                                                                </Style.Triggers>
-                                                            </Style>
-                                                        </TextBlock.Style>
-                                                    </TextBlock>
-                                                    <TextBlock Text="{Binding SubText}" Foreground="#B9BBBE" FontSize="10" TextAlignment="Center" Margin="0,4,0,0"/>
-                                                </StackPanel>
-
-                                                <Border x:Name="PackBadge" Background="#FAA61A" CornerRadius="4" Padding="4,1" HorizontalAlignment="Left" VerticalAlignment="Top" Margin="-4,-4,0,0" Visibility="Collapsed">
-                                                    <TextBlock Text="PACK" FontSize="8" FontWeight="Bold" Foreground="Black"/>
-                                                </Border>
-
-                                                <Grid x:Name="ControlsPanel" Grid.Row="1" Margin="0,6,0,0">
-                                                    <Grid.ColumnDefinitions>
-                                                        <ColumnDefinition Width="*"/>
-                                                        <ColumnDefinition Width="Auto"/>
-                                                    </Grid.ColumnDefinitions>
-                                                    <CheckBox Grid.Column="0" VerticalAlignment="Center" HorizontalAlignment="Center" IsChecked="{Binding IsEnabled, Mode=OneWay}" Click="ModEnabledCheckBox_Click" Tag="{Binding}" ToolTip="Aktif / Pasif"/>
-                                                    <Button Grid.Column="1" Content="✕" Width="22" Height="22" FontSize="10" Padding="0" Background="#ED4245" Foreground="White" BorderThickness="0" Click="DeleteModBtn_Click" Tag="{Binding}" ToolTip="Sil">
-                                                        <Button.Resources>
-                                                            <Style TargetType="Border">
-                                                                <Setter Property="CornerRadius" Value="4"/>
-                                                            </Style>
-                                                        </Button.Resources>
-                                                    </Button>
-                                                </Grid>
-                                            </Grid>
-                                        </Border>
-                                        <DataTemplate.Triggers>
-                                            <DataTrigger Binding="{Binding IsPack}" Value="True">
-                                                <Setter TargetName="PackBadge" Property="Visibility" Value="Visible"/>
-                                            </DataTrigger>
-                                        </DataTemplate.Triggers>
-                                    </DataTemplate>
-                                </ListBox.ItemTemplate>
-                            </ListBox>
+                <!-- SEKME 2: KURULU İÇERİK -->
+                <TabItem Header="Kurulu">
+                    <DockPanel Background="{StaticResource BgBrush}" Margin="0,10,0,0">
+                        <StackPanel DockPanel.Dock="Top" Margin="0,0,0,8">
+                            <TextBlock x:Name="InstalledTitle" Text="Kurulu içerik" Style="{StaticResource H1}"/>
+                            <TextBlock x:Name="InstalledSummary" Style="{StaticResource Muted}" Margin="0,2,0,10"/>
+                            <WrapPanel>
+                                <CheckBox x:Name="SelectAllCheck" Content="Tümünü seç" Margin="0,0,14,0" Click="SelectAllCheck_Click"/>
+                                <Button Content="Seçilenleri Aç" Style="{StaticResource GreenBtn}" Click="EnableSelectedBtn_Click"/>
+                                <Button Content="Seçilenleri Kapat" Style="{StaticResource GrayBtn}" Click="DisableSelectedBtn_Click"/>
+                                <Button Content="Seçilenleri Sil" Style="{StaticResource RedBtn}" Click="DeleteSelectedBtn_Click"/>
+                                <Button Content="Onar (Mod Doktoru)" Style="{StaticResource Btn}" Click="RepairBtn_Click"
+                                        ToolTip="Eksik ya da bozulmuş dosyaları bulur ve sadece onları yeniden indirir."/>
+                                <Button Content="Klasörü Aç" Style="{StaticResource GrayBtn}" Click="OpenModsFolderBtn_Click"/>
+                                <Button Content="Yenile" Style="{StaticResource GrayBtn}" Click="RefreshInstalledBtn_Click"/>
+                            </WrapPanel>
                         </StackPanel>
 
-                        <!-- DETAY (MODPACK İÇİ) GÖRÜNÜMÜ -->
-                        <StackPanel x:Name="ModpackDetailView" Width="640" Margin="0,20,0,0" HorizontalAlignment="Center" Visibility="Collapsed">
-                            <Grid Margin="0,0,0,15">
-                                <Button Content="← Geri" Width="70" Height="30" Background="#4F545C" Foreground="White" BorderThickness="0" HorizontalAlignment="Left" Click="BackToMainInstalledView_Click">
-                                    <Button.Resources>
-                                        <Style TargetType="Border">
-                                            <Setter Property="CornerRadius" Value="6"/>
-                                        </Style>
-                                    </Button.Resources>
-                                </Button>
-                                <TextBlock x:Name="DetailPackTitle" Text="Paket Adı" Foreground="White" FontSize="20" FontWeight="Bold" HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                            </Grid>
-
-                            <ListBox x:Name="ModpackDetailListBox" Height="440" Width="640" Background="#2F3136" BorderThickness="0" ScrollViewer.HorizontalScrollBarVisibility="Disabled">
-                                <ListBox.ItemsPanel>
-                                    <ItemsPanelTemplate>
-                                        <WrapPanel Orientation="Horizontal"/>
-                                    </ItemsPanelTemplate>
-                                </ListBox.ItemsPanel>
-                                <ListBox.ItemContainerStyle>
-                                    <Style TargetType="ListBoxItem" BasedOn="{StaticResource InstalledCardListBoxItemStyle}"/>
-                                </ListBox.ItemContainerStyle>
-                                <ListBox.ItemTemplate>
-                                    <DataTemplate>
-                                        <Border Width="118" Height="168" Background="#36393F" CornerRadius="8" Padding="8">
-                                            <Grid>
-                                                <Grid.RowDefinitions>
-                                                    <RowDefinition Height="*"/>
-                                                    <RowDefinition Height="Auto"/>
-                                                </Grid.RowDefinitions>
-                                                <StackPanel Grid.Row="0">
-                                                    <Border Width="64" Height="64" CornerRadius="6" ClipToBounds="True" HorizontalAlignment="Center" Background="#202225">
-                                                        <Border.Style>
-                                                            <Style TargetType="Border">
-                                                                <Setter Property="Opacity" Value="1"/>
-                                                                <Style.Triggers>
-                                                                    <DataTrigger Binding="{Binding IsEnabled}" Value="False">
-                                                                        <Setter Property="Opacity" Value="0.35"/>
-                                                                    </DataTrigger>
-                                                                </Style.Triggers>
-                                                            </Style>
-                                                        </Border.Style>
-                                                        <Image local:AsyncImageLoader.SourceUrl="{Binding IconUrl}" Stretch="UniformToFill"/>
-                                                    </Border>
-                                                    <TextBlock Text="{Binding DisplayName}" FontSize="11" TextWrapping="Wrap" TextAlignment="Center" TextTrimming="CharacterEllipsis" MaxHeight="45" Margin="0,6,0,0">
-                                                        <TextBlock.Style>
-                                                            <Style TargetType="TextBlock">
-                                                                <Setter Property="Foreground" Value="White"/>
-                                                                <Style.Triggers>
-                                                                    <DataTrigger Binding="{Binding IsEnabled}" Value="False">
-                                                                        <Setter Property="Foreground" Value="#72767D"/>
-                                                                    </DataTrigger>
-                                                                </Style.Triggers>
-                                                            </Style>
-                                                        </TextBlock.Style>
-                                                    </TextBlock>
-                                                </StackPanel>
-                                                <Grid Grid.Row="1" Margin="0,6,0,0">
-                                                    <Grid.ColumnDefinitions>
-                                                        <ColumnDefinition Width="*"/>
-                                                        <ColumnDefinition Width="Auto"/>
-                                                    </Grid.ColumnDefinitions>
-                                                    <CheckBox Grid.Column="0" VerticalAlignment="Center" HorizontalAlignment="Center" IsChecked="{Binding IsEnabled, Mode=OneWay}" Click="ModEnabledCheckBox_Click" Tag="{Binding}" ToolTip="Aktif / Pasif"/>
-                                                    <Button Grid.Column="1" Content="✕" Width="22" Height="22" FontSize="10" Padding="0" Background="#ED4245" Foreground="White" BorderThickness="0" Click="DeleteModBtn_Click" Tag="{Binding}" ToolTip="Sil">
-                                                        <Button.Resources>
-                                                            <Style TargetType="Border">
-                                                                <Setter Property="CornerRadius" Value="4"/>
-                                                            </Style>
-                                                        </Button.Resources>
-                                                    </Button>
-                                                </Grid>
-                                            </Grid>
+                        <ListBox x:Name="InstalledList" Background="{StaticResource PanelBrush}" BorderThickness="0" Padding="4"
+                                 SelectionMode="Extended" ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                 ItemContainerStyle="{StaticResource CardItem}" SelectionChanged="InstalledList_SelectionChanged">
+                            <ListBox.ItemTemplate>
+                                <DataTemplate>
+                                    <Grid Margin="8,6">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="40"/>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <Border Width="32" Height="32" CornerRadius="5" ClipToBounds="True" Background="{StaticResource BgBrush}" Opacity="{Binding IconOpacity}">
+                                            <Image local:AsyncImageLoader.SourceUrl="{Binding Entry.IconUrl}" Stretch="UniformToFill"/>
                                         </Border>
-                                    </DataTemplate>
-                                </ListBox.ItemTemplate>
-                            </ListBox>
-                        </StackPanel>
-                    </Grid>
+                                        <StackPanel Grid.Column="1" VerticalAlignment="Center" Margin="8,0">
+                                            <TextBlock Text="{Binding Entry.DisplayName}" Foreground="{Binding NameBrush}" FontSize="13" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
+                                            <TextBlock Text="{Binding Details}" Foreground="{StaticResource DimBrush}" FontSize="11" TextTrimming="CharacterEllipsis"/>
+                                        </StackPanel>
+                                        <Border Grid.Column="2" Background="{Binding StateBrush}" CornerRadius="4" Padding="6,2" Margin="0,0,12,0" VerticalAlignment="Center"
+                                                Visibility="{Binding StateVisibility}">
+                                            <TextBlock Text="{Binding StateText}" Foreground="White" FontSize="10" FontWeight="Bold"/>
+                                        </Border>
+                                        <CheckBox Grid.Column="3" VerticalAlignment="Center" IsChecked="{Binding Entry.Enabled, Mode=OneWay}" Tag="{Binding}"
+                                                  ToolTip="Açık / Kapalı" Click="EntryToggle_Click"/>
+                                    </Grid>
+                                </DataTemplate>
+                            </ListBox.ItemTemplate>
+                        </ListBox>
+                    </DockPanel>
                 </TabItem>
 
                 <!-- SEKME 3: PROFİLLER -->
                 <TabItem Header="Profiller">
-                    <Grid Background="#202225" Margin="20">
+                    <Grid Background="{StaticResource BgBrush}" Margin="0,10,0,0">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*"/>
                             <ColumnDefinition Width="20"/>
-                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="320"/>
                         </Grid.ColumnDefinitions>
 
-                        <!-- SOL PANEL: Mevcut Profiller -->
-                        <StackPanel Grid.Column="0">
-                            <TextBlock Text="Profillerim" Foreground="White" FontSize="22" FontWeight="Bold" Margin="0,0,0,5"/>
-                            <TextBlock Text="Oynamak istediğin profili seç ve aktif et." Foreground="#B9BBBE" FontSize="12" Margin="0,0,0,15"/>
-
-                            <ListBox x:Name="ProfilesListBox" Height="300" Background="#2F3136" BorderThickness="0" Margin="0,0,0,15">
-                                <ListBox.ItemContainerStyle>
-                                    <Style TargetType="ListBoxItem" BasedOn="{StaticResource SearchCardListBoxItemStyle}"/>
-                                </ListBox.ItemContainerStyle>
+                        <DockPanel Grid.Column="0">
+                            <StackPanel DockPanel.Dock="Top" Margin="0,0,0,10">
+                                <TextBlock Text="Profillerim" Style="{StaticResource H1}"/>
+                                <TextBlock Text="Her profil kendi Minecraft sürümü, loader'ı ve modlarıyla ayrı bir dünya. Modpack'ler kendi profillerine kurulur." Style="{StaticResource Muted}"/>
+                            </StackPanel>
+                            <WrapPanel DockPanel.Dock="Bottom" Margin="0,10,0,0">
+                                <Button Content="Aktif Et" Style="{StaticResource GreenBtn}" Click="UseProfileBtn_Click"/>
+                                <Button Content="Klasörü Aç" Style="{StaticResource GrayBtn}" Click="OpenProfileFolderBtn_Click"/>
+                                <Button Content="Profili Sil" Style="{StaticResource RedBtn}" Click="DeleteProfileBtn_Click"/>
+                            </WrapPanel>
+                            <ListBox x:Name="ProfilesList" Background="{StaticResource PanelBrush}" BorderThickness="0" Padding="4"
+                                     ItemContainerStyle="{StaticResource CardItem}" MouseDoubleClick="ProfilesList_MouseDoubleClick">
                                 <ListBox.ItemTemplate>
                                     <DataTemplate>
-                                        <Border Background="#36393F" CornerRadius="8" Padding="15" Margin="5">
-                                            <StackPanel>
-                                                <TextBlock Text="{Binding Name}" Foreground="White" FontSize="16" FontWeight="Bold"/>
+                                        <Grid Margin="12,10">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="44"/>
+                                                <ColumnDefinition Width="*"/>
+                                            </Grid.ColumnDefinitions>
+                                            <Border Width="38" Height="38" CornerRadius="6" ClipToBounds="True" Background="{StaticResource BgBrush}">
+                                                <Image local:AsyncImageLoader.SourceUrl="{Binding Profile.IconUrl}" Stretch="UniformToFill"/>
+                                            </Border>
+                                            <StackPanel Grid.Column="1" Margin="8,0,0,0">
+                                                <TextBlock Foreground="White" FontSize="15" FontWeight="Bold">
+                                                    <Run Text="{Binding Profile.Name, Mode=OneWay}"/>
+                                                    <Run Text="{Binding ActiveMarker, Mode=OneWay}" Foreground="#43B581"/>
+                                                </TextBlock>
                                                 <StackPanel Orientation="Horizontal" Margin="0,5,0,0">
-                                                    <Border Background="#7289DA" CornerRadius="4" Padding="5,2" Margin="0,0,10,0">
-                                                        <TextBlock Text="{Binding GameVersion}" Foreground="White" FontSize="11" FontWeight="Bold"/>
+                                                    <Border Background="{StaticResource AccentBrush}" CornerRadius="4" Padding="6,2" Margin="0,0,6,0">
+                                                        <TextBlock Text="{Binding Profile.GameVersion}" Foreground="White" FontSize="11" FontWeight="Bold"/>
                                                     </Border>
-                                                    <Border Background="#43B581" CornerRadius="4" Padding="5,2">
-                                                        <TextBlock Text="{Binding Loader}" Foreground="White" FontSize="11" FontWeight="Bold"/>
+                                                    <Border Background="{StaticResource GreenBrush}" CornerRadius="4" Padding="6,2" Margin="0,0,6,0">
+                                                        <TextBlock Text="{Binding Profile.Loader}" Foreground="White" FontSize="11" FontWeight="Bold"/>
                                                     </Border>
+                                                    <Border Background="{StaticResource OrangeBrush}" CornerRadius="4" Padding="6,2" Margin="0,0,6,0" Visibility="{Binding PackBadgeVisibility}">
+                                                        <TextBlock Text="PACK" Foreground="Black" FontSize="11" FontWeight="Bold"/>
+                                                    </Border>
+                                                    <TextBlock Text="{Binding Summary}" Foreground="{StaticResource MutedBrush}" FontSize="11" VerticalAlignment="Center"/>
                                                 </StackPanel>
                                             </StackPanel>
-                                        </Border>
+                                        </Grid>
                                     </DataTemplate>
                                 </ListBox.ItemTemplate>
                             </ListBox>
+                        </DockPanel>
 
-                            <Button x:Name="UseProfileBtn" Content="Seçili Profili Aktif Et" Height="45" Background="#43B581" Foreground="White" FontSize="14" FontWeight="Bold" BorderThickness="0" Click="UseProfileBtn_Click">
-                                <Button.Resources>
-                                    <Style TargetType="Border">
-                                        <Setter Property="CornerRadius" Value="8"/>
-                                    </Style>
-                                </Button.Resources>
-                            </Button>
-                        </StackPanel>
-
-                        <!-- SAĞ PANEL: Yeni Profil Oluşturma -->
                         <StackPanel Grid.Column="2">
-                            <TextBlock Text="Yeni Profil Oluştur" Foreground="White" FontSize="22" FontWeight="Bold" Margin="0,0,0,5"/>
-                            <TextBlock Text="Modpack'ler veya farklı sürümler için izole alanlar." Foreground="#B9BBBE" FontSize="12" Margin="0,0,0,15"/>
-
-                            <Border Background="#2F3136" CornerRadius="8" Padding="20">
+                            <TextBlock Text="Yeni Profil" Style="{StaticResource H1}"/>
+                            <Border Background="{StaticResource PanelBrush}" CornerRadius="8" Padding="18" Margin="0,10,0,0">
                                 <StackPanel>
-                                    <TextBlock Text="Profil Adı (Örn: Hexxit, Survival)" Foreground="#B9BBBE" FontWeight="Bold" Margin="0,0,0,5"/>
-                                    <TextBox x:Name="NewProfileNameBox" Height="35" FontSize="14" VerticalContentAlignment="Center" Margin="0,0,0,15"/>
-
-                                    <TextBlock Text="Oyun Sürümü" Foreground="#B9BBBE" FontWeight="Bold" Margin="0,0,0,5"/>
-                                    <TextBox x:Name="NewProfileVersionBox" Text="1.20.1" Height="35" FontSize="14" VerticalContentAlignment="Center" Margin="0,0,0,15"/>
-
-                                    <Button x:Name="CreateProfileBtn" Content="Klasör Yarat ve Oluştur" Height="40" Background="#7289DA" Foreground="White" FontSize="14" FontWeight="Bold" BorderThickness="0" Click="CreateProfileBtn_Click">
-                                        <Button.Resources>
-                                            <Style TargetType="Border">
-                                                <Setter Property="CornerRadius" Value="6"/>
-                                            </Style>
-                                        </Button.Resources>
-                                    </Button>
+                                    <TextBlock Text="Profil adı" Style="{StaticResource Label}" Margin="0,0,0,4"/>
+                                    <TextBox x:Name="NewProfileNameBox"/>
+                                    <TextBlock Text="Minecraft sürümü" Style="{StaticResource Label}"/>
+                                    <ComboBox x:Name="NewProfileVersionCombo" IsEditable="True"/>
+                                    <TextBlock Text="Mod yükleyici" Style="{StaticResource Label}"/>
+                                    <ComboBox x:Name="NewProfileLoaderCombo"/>
+                                    <Button x:Name="CreateProfileBtn" Content="Profil Oluştur" Margin="0,16,0,0" Height="38" Style="{StaticResource Btn}" Click="CreateProfileBtn_Click"/>
+                                </StackPanel>
+                            </Border>
+                            <Border Background="{StaticResource PanelBrush}" CornerRadius="8" Padding="18" Margin="0,14,0,0">
+                                <StackPanel>
+                                    <TextBlock Text="Paket dosyası içe aktar" Foreground="White" FontWeight="Bold"/>
+                                    <TextBlock Text="Bilgisayarındaki bir Modrinth paketini (.mrpack) yeni bir profil olarak kurar." Style="{StaticResource Muted}" Margin="0,4,0,10"/>
+                                    <Button Content="Dosya Seç..." Margin="0" Style="{StaticResource GrayBtn}" Click="ImportMrpackBtn_Click"/>
                                 </StackPanel>
                             </Border>
                         </StackPanel>
                     </Grid>
                 </TabItem>
 
+                <!-- SEKME 4: AYARLAR -->
+                <TabItem Header="Ayarlar">
+                    <ScrollViewer Background="{StaticResource BgBrush}" VerticalScrollBarVisibility="Auto" Margin="0,10,0,0">
+                        <StackPanel MaxWidth="640" HorizontalAlignment="Left">
+                            <TextBlock Text="RAM" Style="{StaticResource H1}"/>
+                            <StackPanel Orientation="Horizontal" Margin="0,10,0,6">
+                                <RadioButton x:Name="RamAutoRadio" Content="Otomatik (önerilen)" GroupName="Ram" Checked="RamMode_Changed"/>
+                                <RadioButton x:Name="RamManualRadio" Content="Kendim seçeceğim" GroupName="Ram" Checked="RamMode_Changed"/>
+                            </StackPanel>
+                            <TextBlock x:Name="RamInfoText" Style="{StaticResource Muted}"/>
+                            <Grid x:Name="RamManualPanel" Margin="0,8,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="80"/>
+                                </Grid.ColumnDefinitions>
+                                <Slider x:Name="RamSlider" Minimum="1024" Maximum="8192" TickFrequency="512" IsSnapToTickEnabled="True" ValueChanged="RamSlider_ValueChanged"/>
+                                <TextBlock x:Name="RamValueText" Grid.Column="1" Foreground="White" FontWeight="Bold" HorizontalAlignment="Right"/>
+                            </Grid>
+
+                            <TextBlock Text="İndirme" Style="{StaticResource H1}" Margin="0,26,0,0"/>
+                            <TextBlock Text="Aynı anda inecek dosya sayısı. İnternetin yavaşsa düşür." Style="{StaticResource Muted}" Margin="0,6,0,6"/>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="80"/>
+                                </Grid.ColumnDefinitions>
+                                <Slider x:Name="ParallelSlider" Minimum="1" Maximum="16" TickFrequency="1" IsSnapToTickEnabled="True" ValueChanged="ParallelSlider_ValueChanged"/>
+                                <TextBlock x:Name="ParallelValueText" Grid.Column="1" Foreground="White" FontWeight="Bold" HorizontalAlignment="Right"/>
+                            </Grid>
+
+                            <TextBlock Text="Oyun" Style="{StaticResource H1}" Margin="0,26,0,0"/>
+                            <CheckBox x:Name="HideLauncherCheck" Content="Oyun açıkken başlatıcıyı gizle" Margin="0,10,0,0"/>
+
+                            <TextBlock Text="CurseForge" Style="{StaticResource H1}" Margin="0,26,0,0"/>
+                            <TextBlock Style="{StaticResource Muted}" Margin="0,6,0,6"
+                                       Text="CurseForge modlarını aramak için ücretsiz bir API anahtarı gerekir (console.curseforge.com). CurseForge MODPACK'leri anahtar olmadan da 'FTB ve CurseForge Paketleri' kaynağından kurulabilir."/>
+                            <TextBox x:Name="CurseForgeKeyBox"/>
+
+                            <WrapPanel Margin="0,24,0,0">
+                                <Button Content="Ayarları Kaydet" Style="{StaticResource GreenBtn}" Click="SaveSettingsBtn_Click"/>
+                                <Button Content="Veri Klasörünü Aç" Style="{StaticResource GrayBtn}" Click="OpenDataFolderBtn_Click"/>
+                                <Button Content="Hesaptan Çık" Style="{StaticResource RedBtn}" Click="SignOutBtn_Click"/>
+                            </WrapPanel>
+                            <TextBlock x:Name="DataFolderText" Style="{StaticResource Muted}" Margin="0,10,0,20"/>
+                        </StackPanel>
+                    </ScrollViewer>
+                </TabItem>
             </TabControl>
+
+            <!-- Alt bar: durum ve ilerleme -->
+            <Border Grid.Row="2" Background="{StaticResource PanelBrush}" Padding="16,10">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="260"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock x:Name="StatusText" Text="Hazır!" Foreground="{StaticResource MutedBrush}" FontSize="13" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+                    <ProgressBar x:Name="BusyProgress" Grid.Column="1" Height="10" Minimum="0" Maximum="1" Margin="12,0" Visibility="Hidden"
+                                 Background="#40444B" Foreground="{StaticResource GreenBrush}" BorderThickness="0"/>
+                    <Button x:Name="CancelBtn" Grid.Column="2" Content="İptal" Margin="0" Padding="12,4" Style="{StaticResource GrayBtn}" Visibility="Collapsed" Click="CancelBtn_Click"/>
+                </Grid>
+            </Border>
         </Grid>
     </Grid>
 </Window>
