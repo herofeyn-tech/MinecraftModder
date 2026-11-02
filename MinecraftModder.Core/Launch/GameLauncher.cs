@@ -4,6 +4,7 @@ using CmlLib.Core.Auth;
 using CmlLib.Core.Installers;
 using CmlLib.Core.ProcessBuilder;
 using MinecraftModder.Core.Install;
+using MinecraftModder.Core.Mods;
 using MinecraftModder.Core.Profiles;
 using MinecraftModder.Core.Settings;
 using MinecraftModder.Core.Util;
@@ -12,6 +13,8 @@ namespace MinecraftModder.Core.Launch
 {
     // "Oyna" tuşunun arkasındaki her şey: loader kurulumu, eksik kütüphaneler, Java,
     // RAM kararı ve oyunun başlatılması. Kullanıcıya hiçbir şey sorulmaz.
+    public sealed record LaunchResult(Process Process, CompatibilityReport Compatibility);
+
     public sealed class GameLauncher
     {
         public const string LauncherName = "MinecraftModder";
@@ -23,10 +26,12 @@ namespace MinecraftModder.Core.Launch
         private readonly SettingsStore _settings;
         private readonly LoaderInstaller _loaders;
         private readonly ContentInstaller _installer;
+        private readonly ModCompatibilityService _compatibility;
 
         public GameLauncher(AppPaths paths, HttpClient http, ProfileStore profiles, SettingsStore settings,
-            LoaderInstaller loaders, ContentInstaller installer)
+            LoaderInstaller loaders, ContentInstaller installer, ModCompatibilityService compatibility)
         {
+            _compatibility = compatibility;
             _paths = paths;
             _http = http;
             _profiles = profiles;
@@ -41,7 +46,8 @@ namespace MinecraftModder.Core.Launch
             return new MinecraftLauncher(MinecraftLauncherParameters.CreateDefault(path, _http));
         }
 
-        public async Task<Process> LaunchAsync(GameProfile profile, MSession session, IProgress<ProgressInfo>? progress, CancellationToken ct = default)
+        // Dönen rapor: oyun açılmadan önce modlarda neyin düzeltildiği (arayüz kullanıcıya kısaca söyler).
+        public async Task<LaunchResult> LaunchAsync(GameProfile profile, MSession session, IProgress<ProgressInfo>? progress, CancellationToken ct = default)
         {
             if (!Directory.Exists(profile.GameDirectory))
                 throw new DirectoryNotFoundException($"Profil klasörü bulunamadı: {profile.GameDirectory}");
@@ -57,6 +63,8 @@ namespace MinecraftModder.Core.Launch
             {
                 // İnternet yoksa Fabric API zaten kuruluysa oyun yine açılabilir; burada durdurmuyoruz.
             }
+
+            var report = await _compatibility.CheckAndFixAsync(profile, progress, ct);
 
             int ram = RamAdvisor.Decide(_settings.Current, profile);
             var option = new MLaunchOption
@@ -79,7 +87,7 @@ namespace MinecraftModder.Core.Launch
 
             profile.LastPlayedAt = DateTimeOffset.Now;
             _profiles.Save(profile);
-            return process;
+            return new LaunchResult(process, report);
         }
 
         // Oyun çökerse son çökme raporunun yolu (yoksa en son log). Mod doktoru ve arayüz için.

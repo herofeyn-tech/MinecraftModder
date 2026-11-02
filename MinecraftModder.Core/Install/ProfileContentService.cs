@@ -1,4 +1,5 @@
 using MinecraftModder.Core.Content;
+using MinecraftModder.Core.Content.CurseForge;
 using MinecraftModder.Core.Content.Modrinth;
 using MinecraftModder.Core.Profiles;
 using MinecraftModder.Core.Util;
@@ -13,11 +14,13 @@ namespace MinecraftModder.Core.Install
 
         private readonly ProfileStore _profiles;
         private readonly ModrinthProvider _modrinth;
+        private readonly CurseForgeProvider _curseForge;
 
-        public ProfileContentService(ProfileStore profiles, ModrinthProvider modrinth)
+        public ProfileContentService(ProfileStore profiles, ModrinthProvider modrinth, CurseForgeProvider curseForge)
         {
             _profiles = profiles;
             _modrinth = modrinth;
+            _curseForge = curseForge;
         }
 
         public async Task<IReadOnlyList<ContentEntry>> RefreshAsync(GameProfile profile, CancellationToken ct = default)
@@ -158,10 +161,15 @@ namespace MinecraftModder.Core.Install
                 return false; // internet yoksa bir dahaki sefere tekrar denenir
             }
 
+            var notOnModrinth = new List<ContentEntry>();
             foreach (var entry in unknown)
             {
                 entry.LookedUp = true;
-                if (entry.Sha1 == null || !found.TryGetValue(entry.Sha1, out var match)) continue;
+                if (entry.Sha1 == null || !found.TryGetValue(entry.Sha1, out var match))
+                {
+                    notOnModrinth.Add(entry);
+                    continue;
+                }
 
                 entry.Title ??= match.Project.Title;
                 entry.IconUrl ??= match.Project.IconUrl;
@@ -183,7 +191,48 @@ namespace MinecraftModder.Core.Install
                     }
                 }
             }
+            await IdentifyOnCurseForgeAsync(profile, notOnModrinth, ct);
             return true;
+        }
+
+        // Modrinth'te olmayan dosyalar CurseForge'da olabilir (parmak iziyle aranır, API anahtarı gerekmez).
+        private async Task IdentifyOnCurseForgeAsync(GameProfile profile, List<ContentEntry> entries, CancellationToken ct)
+        {
+            using var gate = new SemaphoreSlim(6);
+            await Task.WhenAll(entries.Where(e => File.Exists(e.GetFullPath(profile))).Select(async entry =>
+            {
+                await gate.WaitAsync(ct);
+                try
+                {
+                    uint fingerprint = await Task.Run(() => Hashing.CurseForgeFingerprint(entry.GetFullPath(profile)), ct);
+                    var match = await _curseForge.LookupFingerprintAsync(fingerprint, ct);
+                    if (match == null) return;
+
+                    entry.Title ??= match.Title;
+                    entry.IconUrl ??= match.IconUrl;
+                    if (entry.ProjectId == null)
+                    {
+                        entry.ProviderId = CurseForgeProvider.ProviderId;
+                        entry.ProjectId = match.ProjectId;
+                        entry.VersionId = match.FileId;
+                    }
+                    // CurseForge dosya adresleri dosya numarasından türetilebilir; böylece Onar bu dosyayı da geri getirebilir.
+                    if (entry.Urls.Count == 0 && long.TryParse(match.FileId, out long fileId) && !string.IsNullOrEmpty(match.FileName))
+                    {
+                        string name = Uri.EscapeDataString(match.FileName);
+                        entry.Urls.Add($"https://edge.forgecdn.net/files/{fileId / 1000}/{fileId % 1000}/{name}");
+                        entry.Urls.Add($"https://mediafilez.forgecdn.net/files/{fileId / 1000}/{fileId % 1000}/{name}");
+                    }
+                }
+                catch (Exception ex) when (ex is IOException or HttpRequestException)
+                {
+                    // tanınamazsa dosya yine çalışır, sadece adı/ikonu olmaz
+                }
+                finally
+                {
+                    gate.Release();
+                }
+            }));
         }
 
         private static string? TryHash(string path)

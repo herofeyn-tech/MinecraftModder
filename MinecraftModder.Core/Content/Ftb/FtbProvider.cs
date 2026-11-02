@@ -82,6 +82,7 @@ namespace MinecraftModder.Core.Content.Ftb
                 Description = pack.Synopsis ?? "",
                 Author = pack.Authors?.FirstOrDefault()?.Name ?? (isCurse ? "CurseForge" : "FTB"),
                 IconUrl = icon,
+                BannerUrl = art.FirstOrDefault(a => a.Type == "splash")?.Url ?? art.FirstOrDefault(a => a.Type == "screenshot")?.Url,
                 Downloads = pack.Installs,
                 Kind = ContentKind.Modpack,
                 Tags = tags,

@@ -64,6 +64,10 @@ namespace MinecraftModder.Core.Profiles
         public string? Title { get; set; }
         public string? IconUrl { get; set; }
 
+        // Jar'ın kendi içinde yazan mod kimliği (ör. "sodium"). Aynı mod farklı sitelerden gelse de aynıdır;
+        // iki kez kurulmasını önlemek ve eksik bağımlılıkları bulmak için kullanılır.
+        public string? ModId { get; set; }
+
         public string? Sha1 { get; set; }
         public string? Sha512 { get; set; }
         public long Size { get; set; }
@@ -71,6 +75,9 @@ namespace MinecraftModder.Core.Profiles
 
         // Modrinth'te hash ile tanınma denendi mi? (tanınmayan dosyalar için her açılışta tekrar sorulmasın)
         public bool LookedUp { get; set; }
+
+        // Sitenin bu sürüm için listelediği gereksinimler kuruldu mu? (elle atılan dosyalar için bir kez bakılır)
+        public bool DependenciesChecked { get; set; }
 
         public const string DisabledSuffix = ".disabled";
 

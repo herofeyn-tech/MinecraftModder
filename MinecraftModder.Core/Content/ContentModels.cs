@@ -85,6 +85,8 @@ namespace MinecraftModder.Core.Content
         public string Description { get; init; } = "";
         public string? Author { get; init; }
         public string? IconUrl { get; init; }
+        // Kartın arka planı için oyun içinden bir görsel (galeri/kapak). Yoksa arayüz kendi desenini çizer.
+        public string? BannerUrl { get; init; }
         public long Downloads { get; init; }
         public IReadOnlyList<string> Tags { get; init; } = Array.Empty<string>();
         public string? WebUrl { get; init; }

@@ -4,32 +4,47 @@ using MinecraftModder.Core.Settings;
 
 namespace MinecraftModder.Core.Content.CurseForge
 {
-    // CurseForge'un resmi API'si (https://docs.curseforge.com). Kullanmak için ücretsiz bir API anahtarı
-    // gerekir: https://console.curseforge.com → Ayarlar'a girilir. Anahtar yoksa bu kaynak gizlenir.
-    // Not: CurseForge MODPACK'leri anahtar olmadan FtbProvider üzerinden zaten kurulabiliyor.
+    // CurseForge modları. İki yoldan çalışır:
+    //  - Ayarlar'da API anahtarı varsa CurseForge'un resmi API'si (mod + shader + kaynak paketi)
+    //  - Anahtar yoksa Feed The Beast'in açık API'si üzerinden (sadece modlar; arama, sürümler, indirme)
+    // Hangi yol kullanılırsa kullanılsın kimlikler aynı (CurseForge proje/dosya numaraları), böylece
+    // kurulu modlar anahtar eklenip çıkarılınca karışmaz.
+    // Not: CurseForge MODPACK'leri her zaman FtbProvider üzerinden kurulur.
     public sealed class CurseForgeProvider : IContentProvider
     {
         public const string ProviderId = "curseforge";
         private const string Api = "https://api.curseforge.com/v1";
         private const int MinecraftGameId = 432;
 
+        private static readonly ContentKind[] KeyKinds = { ContentKind.Mod, ContentKind.ShaderPack, ContentKind.ResourcePack };
+        private static readonly ContentKind[] KeylessKinds = { ContentKind.Mod };
+
         private readonly HttpClient _http;
         private readonly SettingsStore _settings;
+        private readonly FtbCurseClient _ftb;
 
         public CurseForgeProvider(HttpClient http, SettingsStore settings)
         {
             _http = http;
             _settings = settings;
+            _ftb = new FtbCurseClient(http);
         }
 
         public string Id => ProviderId;
         public string DisplayName => "CurseForge";
-        public bool IsAvailable => !string.IsNullOrWhiteSpace(_settings.Current.CurseForgeApiKey);
-        public IReadOnlyList<ContentKind> SupportedKinds { get; } =
-            new[] { ContentKind.Mod, ContentKind.ShaderPack, ContentKind.ResourcePack };
+        public bool IsAvailable => true;
+        public IReadOnlyList<ContentKind> SupportedKinds => HasApiKey ? KeyKinds : KeylessKinds;
+
+        private bool HasApiKey => !string.IsNullOrWhiteSpace(_settings.Current.CurseForgeApiKey);
+
+        // Elle atılmış bir jar'ı CurseForge parmak iziyle tanır (anahtar gerekmez).
+        public Task<FingerprintMatch?> LookupFingerprintAsync(uint fingerprint, CancellationToken ct = default)
+            => _ftb.LookupFingerprintAsync(fingerprint, ct);
 
         public async Task<SearchPage> SearchAsync(SearchRequest request, CancellationToken ct = default)
         {
+            if (!HasApiKey) return await _ftb.SearchAsync(request, ct);
+
             int? classId = ClassId(request.Kind);
             if (classId == null) return new SearchPage(Array.Empty<ContentItem>(), 0, request.Offset);
 
@@ -56,12 +71,16 @@ namespace MinecraftModder.Core.Content.CurseForge
 
         public async Task<ContentItem?> GetProjectAsync(string projectId, ContentKind kindHint, CancellationToken ct = default)
         {
+            if (!HasApiKey) return await _ftb.GetProjectAsync(projectId, ct);
+
             var result = await SendAsync<SingleResponse<ModDto>>($"{Api}/mods/{Uri.EscapeDataString(projectId)}", ct);
             return result?.Data == null ? null : ToItem(result.Data, KindFromClass(result.Data.ClassId) ?? kindHint);
         }
 
         public async Task<IReadOnlyList<ContentVersion>> GetVersionsAsync(ContentItem item, string? gameVersion, ModLoader? loader, CancellationToken ct = default)
         {
+            if (!HasApiKey) return await _ftb.GetVersionsAsync(item, ct);
+
             var query = new List<string> { "pageSize=50" };
             if (!string.IsNullOrEmpty(gameVersion)) query.Add("gameVersion=" + Uri.EscapeDataString(gameVersion));
             if (item.Kind == ContentKind.Mod && loader is { } l && LoaderType(l) is int lt) query.Add($"modLoaderType={lt}");
@@ -79,8 +98,6 @@ namespace MinecraftModder.Core.Content.CurseForge
 
         private async Task<T?> SendAsync<T>(string url, CancellationToken ct)
         {
-            if (!IsAvailable) throw new InvalidOperationException("CurseForge için Ayarlar'dan bir API anahtarı girmelisin.");
-
             using var request = new HttpRequestMessage(HttpMethod.Get, url);
             request.Headers.Add("x-api-key", _settings.Current.CurseForgeApiKey!.Trim());
             request.Headers.Accept.ParseAdd("application/json");
@@ -101,6 +118,7 @@ namespace MinecraftModder.Core.Content.CurseForge
             Description = m.Summary ?? "",
             Author = m.Authors?.FirstOrDefault()?.Name,
             IconUrl = m.Logo?.ThumbnailUrl ?? m.Logo?.Url,
+            BannerUrl = m.Screenshots?.FirstOrDefault()?.ThumbnailUrl,
             Downloads = (long)m.DownloadCount,
             Kind = kind,
             Tags = (m.Categories ?? new List<CategoryDto>()).Select(c => c.Name).ToList(),
@@ -196,6 +214,7 @@ namespace MinecraftModder.Core.Content.CurseForge
             [JsonPropertyName("authors")] public List<AuthorDto>? Authors { get; set; }
             [JsonPropertyName("categories")] public List<CategoryDto>? Categories { get; set; }
             [JsonPropertyName("links")] public LinksDto? Links { get; set; }
+            [JsonPropertyName("screenshots")] public List<LogoDto>? Screenshots { get; set; }
         }
 
         private sealed class LogoDto

@@ -13,12 +13,19 @@ namespace MinecraftModder.Core.Auth
 
         public MSession? Current { get; private set; }
 
+        // CmlLib çevrimdışı oturumları da "msa" diye işaretliyor; hesap türünü kendimiz tutuyoruz.
+        public bool IsMicrosoft { get; private set; }
+
         public async Task<MSession?> TrySilentLoginAsync(CancellationToken ct = default)
         {
             try
             {
                 var session = await _loginHandler.AuthenticateSilently(ct);
-                if (session != null && session.CheckIsValid()) Current = session;
+                if (session != null && session.CheckIsValid())
+                {
+                    Current = session;
+                    IsMicrosoft = true;
+                }
                 return Current;
             }
             catch
@@ -30,6 +37,7 @@ namespace MinecraftModder.Core.Auth
         public async Task<MSession> LoginInteractivelyAsync(CancellationToken ct = default)
         {
             Current = await _loginHandler.AuthenticateInteractively(ct);
+            IsMicrosoft = true;
             return Current;
         }
 
@@ -37,6 +45,7 @@ namespace MinecraftModder.Core.Auth
         {
             try { await _loginHandler.Signout(); } catch { /* zaten çıkış yapılmış olabilir */ }
             Current = null;
+            IsMicrosoft = false;
         }
 
         // Minecraft kullanıcı adı kuralları: 3-16 karakter, harf/rakam/alt çizgi.
@@ -47,6 +56,7 @@ namespace MinecraftModder.Core.Auth
             if (!IsValidOfflineName(username))
                 throw new ArgumentException("Kullanıcı adı 3-16 karakter olmalı ve sadece harf, rakam ya da _ içermeli.");
             Current = MSession.CreateOfflineSession(username);
+            IsMicrosoft = false;
             return Current;
         }
     }

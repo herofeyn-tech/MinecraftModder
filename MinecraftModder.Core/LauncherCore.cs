@@ -5,6 +5,7 @@ using MinecraftModder.Core.Content.Ftb;
 using MinecraftModder.Core.Content.Modrinth;
 using MinecraftModder.Core.Install;
 using MinecraftModder.Core.Launch;
+using MinecraftModder.Core.Mods;
 using MinecraftModder.Core.Net;
 using MinecraftModder.Core.Profiles;
 using MinecraftModder.Core.Settings;
@@ -26,14 +27,17 @@ namespace MinecraftModder.Core
             Downloads = new DownloadManager(http, () => Settings.Current.MaxParallelDownloads);
 
             var modrinth = new ModrinthProvider(http, Downloads);
-            Content = new ContentHub(modrinth, new FtbProvider(http, Downloads), new CurseForgeProvider(http, Settings));
+            var curseForge = new CurseForgeProvider(http, Settings);
+            Content = new ContentHub(modrinth, new FtbProvider(http, Downloads), curseForge);
 
             Installer = new ContentInstaller(Profiles, Content, Downloads);
             Modpacks = new ModpackInstaller(paths, Profiles, Downloads);
-            ProfileContent = new ProfileContentService(Profiles, modrinth);
+            ProfileContent = new ProfileContentService(Profiles, modrinth, curseForge);
             Doctor = new ProfileDoctor(Downloads);
+            Compatibility = new ModCompatibilityService(Profiles, ProfileContent, Installer, new DependencyFinder(Content, Installer), Content);
+            Importer = new ContentImporter(Profiles, Modpacks, Compatibility);
             Loaders = new LoaderInstaller(http, Profiles);
-            Launcher = new GameLauncher(paths, http, Profiles, Settings, Loaders, Installer);
+            Launcher = new GameLauncher(paths, http, Profiles, Settings, Loaders, Installer, Compatibility);
             GameVersions = new GameVersionService(paths, http);
             Accounts = new AccountService();
         }
@@ -47,6 +51,8 @@ namespace MinecraftModder.Core
         public ModpackInstaller Modpacks { get; }
         public ProfileContentService ProfileContent { get; }
         public ProfileDoctor Doctor { get; }
+        public ModCompatibilityService Compatibility { get; }
+        public ContentImporter Importer { get; }
         public LoaderInstaller Loaders { get; }
         public GameLauncher Launcher { get; }
         public GameVersionService GameVersions { get; }

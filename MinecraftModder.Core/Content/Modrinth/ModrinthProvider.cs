@@ -56,6 +56,7 @@ namespace MinecraftModder.Core.Content.Modrinth
                 Description = h.Description ?? "",
                 Author = h.Author,
                 IconUrl = string.IsNullOrEmpty(h.IconUrl) ? null : h.IconUrl,
+                BannerUrl = h.FeaturedGallery ?? h.Gallery?.FirstOrDefault(),
                 Downloads = h.Downloads,
                 Kind = KindFromProjectType(h.ProjectType) ?? request.Kind,
                 Tags = h.DisplayCategories ?? h.Categories ?? new List<string>(),
@@ -153,6 +154,7 @@ namespace MinecraftModder.Core.Content.Modrinth
             Title = p.Title,
             Description = p.Description ?? "",
             IconUrl = string.IsNullOrEmpty(p.IconUrl) ? null : p.IconUrl,
+            BannerUrl = (p.Gallery?.FirstOrDefault(g => g.Featured) ?? p.Gallery?.FirstOrDefault())?.Url,
             Downloads = p.Downloads,
             Kind = KindFromProjectType(p.ProjectType) ?? kindHint,
             Tags = p.Categories ?? new List<string>(),
@@ -221,6 +223,8 @@ namespace MinecraftModder.Core.Content.Modrinth
             [JsonPropertyName("project_type")] public string? ProjectType { get; set; }
             [JsonPropertyName("categories")] public List<string>? Categories { get; set; }
             [JsonPropertyName("display_categories")] public List<string>? DisplayCategories { get; set; }
+            [JsonPropertyName("featured_gallery")] public string? FeaturedGallery { get; set; }
+            [JsonPropertyName("gallery")] public List<string>? Gallery { get; set; }
         }
 
         private sealed class ProjectDto
@@ -233,6 +237,13 @@ namespace MinecraftModder.Core.Content.Modrinth
             [JsonPropertyName("downloads")] public long Downloads { get; set; }
             [JsonPropertyName("project_type")] public string? ProjectType { get; set; }
             [JsonPropertyName("categories")] public List<string>? Categories { get; set; }
+            [JsonPropertyName("gallery")] public List<GalleryDto>? Gallery { get; set; }
+        }
+
+        private sealed class GalleryDto
+        {
+            [JsonPropertyName("url")] public string? Url { get; set; }
+            [JsonPropertyName("featured")] public bool Featured { get; set; }
         }
 
         private sealed class VersionDto
