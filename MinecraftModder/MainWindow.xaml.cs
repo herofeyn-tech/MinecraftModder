@@ -1,104 +1,105 @@
-using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.IO;
 using System.Net.Http;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
-using Microsoft.Win32;
+using System.Windows.Interop;
+using System.Windows.Media.Animation;
+using System.Windows.Threading;
 using MinecraftModder.Core;
 using MinecraftModder.Core.Content;
 using MinecraftModder.Core.Install;
 using MinecraftModder.Core.Launch;
+using MinecraftModder.Core.Mods;
 using MinecraftModder.Core.Profiles;
-using MinecraftModder.Core.Settings;
 using MinecraftModder.Core.Util;
+using MinecraftModder.Views;
 
 namespace MinecraftModder
 {
-    // Bu pencere sadece arayüzdür: tüm iş (indirme, kurulum, profil, başlatma) MinecraftModder.Core'da.
-    // Arayüz yeniden tasarlanırken bu dosya baştan yazılabilir, çekirdeğe dokunmak gerekmez.
-    public partial class MainWindow : Window
+    // Ana pencere: giriş ekranı, sayfalar, alt bar + Oyna bloğu, bilgi balonu ve soru kutusu.
+    // Tüm iş (indirme, kurulum, profil, başlatma) MinecraftModder.Core'da; sayfalar IShell üzerinden konuşur.
+    public partial class MainWindow : Window, IShell
     {
-        private static readonly string[] FallbackGameVersions = { "1.21.1", "1.20.1", "1.19.2", "1.18.2", "1.16.5", "1.12.2" };
-
         private readonly LauncherCore _core;
-        private GameProfile _activeProfile = null!;
+        private readonly Dictionary<ShellPage, UserControl> _pages = new();
+        private readonly DispatcherTimer _toastTimer = new() { Interval = TimeSpan.FromSeconds(4.5) };
+        private GameProfile _activeProfile;
 
-        // Uzun işlemler (kurulum, onarma, oyun hazırlama) aynı anda tek bir tane çalışır.
+        // Uzun işlemler aynı anda tek bir tane çalışır.
         private CancellationTokenSource? _busyCts;
         private bool _isBusy;
+        private bool _launching;
         private DateTime _lastProgressUpdate;
 
-        // Arama, kurulum sürerken bile kullanılabilsin diye ayrı yönetilir.
-        private CancellationTokenSource? _searchCts;
-        private SearchRequest? _lastSearch;
-        private readonly ObservableCollection<SearchResultView> _results = new();
-
         private Process? _gameProcess;
-        private bool _suppressProfileCombo;
-        private bool _uiReady;
+        private TaskCompletionSource<int>? _dialog;
+        private bool _closeConfirmed;
 
         public MainWindow()
         {
             InitializeComponent();
-            _core = LauncherCore.Create();
+            // Geliştirirken gerçek profillere dokunmamak için veri klasörü ortam değişkeniyle değiştirilebilir.
+            _core = LauncherCore.Create(Environment.GetEnvironmentVariable("MINECRAFTMODDER_DATA"));
+            _activeProfile = _core.EnsureActiveProfile(); // sayfalar oluşurken takılı disk belli olmalı
+            _toastTimer.Tick += (_, _) =>
+            {
+                _toastTimer.Stop();
+                if (!_isBusy) HideToast();
+            };
 
-            KindCombo.ItemsSource = new[]
+            _pages[ShellPage.Discover] = new DiscoverPage(this);
+            _pages[ShellPage.Mods] = new BrowsePage(this, "Modlar", new[] { (ContentKind.Mod, "Modlar") }, (DataTemplate)FindResource("ModCardTemplate"));
+            _pages[ShellPage.Packs] = new BrowsePage(this, "Paketler", new[] { (ContentKind.Modpack, "Paketler") }, (DataTemplate)FindResource("ModCardTemplate"));
+            _pages[ShellPage.Looks] = new BrowsePage(this, "Görünüm",
+                new[] { (ContentKind.ShaderPack, "Shader'lar"), (ContentKind.ResourcePack, "Kaynak paketleri") }, (DataTemplate)FindResource("LookCardTemplate"));
+            _pages[ShellPage.Discs] = new ProfilesPage(this);
+            _pages[ShellPage.Settings] = new SettingsPage(this);
+            foreach (var page in _pages.Values)
             {
-                new KindOption(ContentKind.Mod, "Modlar"),
-                new KindOption(ContentKind.Modpack, "Mod Paketleri"),
-                new KindOption(ContentKind.ShaderPack, "Shader'lar"),
-                new KindOption(ContentKind.ResourcePack, "Kaynak Paketleri"),
-            };
-            NewProfileLoaderCombo.ItemsSource = new[]
-            {
-                new LoaderOption(ModLoader.Fabric, "Fabric (önerilen)"),
-                new LoaderOption(ModLoader.Forge, "Forge"),
-                new LoaderOption(ModLoader.NeoForge, "NeoForge"),
-                new LoaderOption(ModLoader.Quilt, "Quilt"),
-                new LoaderOption(ModLoader.Vanilla, "Vanilla (modsuz)"),
-            };
-            NewProfileLoaderCombo.SelectedIndex = 0;
-            ResultsList.ItemsSource = _results;
+                page.Visibility = Visibility.Collapsed;
+                PageHost.Children.Add(page);
+            }
         }
 
-        private GameProfile ActiveProfile => _activeProfile;
-        private AppSettings Settings => _core.Settings.Current;
-        private ContentKind SelectedKind => (KindCombo.SelectedItem as KindOption)?.Kind ?? ContentKind.Mod;
+        public LauncherCore Core => _core;
+        public GameProfile ActiveProfile => _activeProfile;
+        public bool IsBusy => _isBusy;
+        public bool IsGameRunning => _gameProcess is { HasExited: false };
+        public string ActiveProfileName => _activeProfile?.Name ?? "";
+
+        public event EventHandler? ActiveProfileChanged;
+        public event EventHandler? ContentChanged;
 
         // ==================== AÇILIŞ VE GİRİŞ ====================
 
         private async void Window_Loaded(object sender, RoutedEventArgs e)
         {
-            _activeProfile = _core.EnsureActiveProfile();
-            RefreshProfiles();
-            LoadSettingsIntoUi();
-            OfflineUsernameBox.Text = Settings.LastOfflineUsername ?? "Oyuncu";
-            _uiReady = true;
-            KindCombo.SelectedIndex = 0;
-            _ = LoadGameVersionsAsync();
+            UpdateActiveProfileUi(animate: false);
+            LoginDisc.Profile = new GameProfile { Id = "login", Name = "M" };
+            OfflineNameBox.Text = _core.Settings.Current.LastOfflineUsername ?? "Oyuncu";
 
-            XboxLoginStatus.Text = "Kayıtlı oturum kontrol ediliyor...";
-            var session = await _core.Accounts.TrySilentLoginAsync();
-            if (session != null)
-            {
-                XboxLoggedOutPanel.Visibility = Visibility.Collapsed;
-                XboxLoggedInPanel.Visibility = Visibility.Visible;
-                XboxRememberedUsername.Text = $"Kayıtlı Hesap: {session.Username}";
-                XboxLoginStatus.Text = "Önceki oturum bulundu!";
-            }
-            else
-            {
-                XboxLoginStatus.Text = "";
-            }
+            await ShowRememberedAccountAsync();
         }
 
-        private async void XboxLoginBtn_Click(object sender, RoutedEventArgs e)
+        // Daha önce Microsoft ile girildiyse "Bu hesapla devam et" gösterilir.
+        private async Task ShowRememberedAccountAsync()
         {
-            XboxLoginBtn.IsEnabled = false;
-            XboxLoginStatus.Text = "Tarayıcıda Microsoft ekranı bekleniyor...";
+            LoginStatus.Text = "Kayıtlı hesap kontrol ediliyor...";
+            var session = await _core.Accounts.TrySilentLoginAsync();
+            MsLoggedOutPanel.Visibility = session == null ? Visibility.Visible : Visibility.Collapsed;
+            MsLoggedInPanel.Visibility = session == null ? Visibility.Collapsed : Visibility.Visible;
+            if (session != null) RememberedText.Text = session.Username;
+            LoginStatus.Text = "";
+        }
+
+        private async void MsLoginBtn_Click(object sender, RoutedEventArgs e)
+        {
+            MsLoginBtn.IsEnabled = false;
+            LoginStatus.Text = "Açılan Microsoft penceresinde giriş yap...";
             try
             {
                 await _core.Accounts.LoginInteractivelyAsync();
@@ -106,42 +107,46 @@ namespace MinecraftModder
             }
             catch (Exception ex)
             {
-                XboxLoginStatus.Text = "Giriş yapılamadı.";
-                MessageBox.Show($"Microsoft girişi başarısız oldu: {ex.Message}", "Giriş Hatası", MessageBoxButton.OK, MessageBoxImage.Error);
+                LoginStatus.Text = "Giriş yapılamadı: " + FriendlyMessage(ex);
             }
             finally
             {
-                XboxLoginBtn.IsEnabled = true;
+                MsLoginBtn.IsEnabled = true;
             }
         }
 
-        private void XboxContinueBtn_Click(object sender, RoutedEventArgs e)
+        private void MsContinueBtn_Click(object sender, RoutedEventArgs e)
         {
             if (_core.Accounts.Current != null) SwitchToMainScreen();
         }
 
-        private async void XboxLogoutBtn_Click(object sender, RoutedEventArgs e)
+        private async void MsForgetBtn_Click(object sender, RoutedEventArgs e)
         {
             await _core.Accounts.SignOutAsync();
-            XboxLoggedInPanel.Visibility = Visibility.Collapsed;
-            XboxLoggedOutPanel.Visibility = Visibility.Visible;
-            XboxLoginStatus.Text = "Hesap unutuldu.";
+            MsLoggedInPanel.Visibility = Visibility.Collapsed;
+            MsLoggedOutPanel.Visibility = Visibility.Visible;
+            LoginStatus.Text = "Hesap unutuldu.";
+        }
+
+        private void OfflineNameBox_KeyDown(object sender, KeyEventArgs e)
+        {
+            if (e.Key == Key.Enter) OfflineLoginBtn_Click(sender, e);
         }
 
         private void OfflineLoginBtn_Click(object sender, RoutedEventArgs e)
         {
-            string username = OfflineUsernameBox.Text.Trim();
+            string username = OfflineNameBox.Text.Trim();
             try
             {
                 _core.Accounts.UseOffline(username);
             }
             catch (ArgumentException ex)
             {
-                MessageBox.Show(ex.Message, "Kullanıcı adı", MessageBoxButton.OK, MessageBoxImage.Warning);
+                LoginStatus.Text = ex.Message;
                 return;
             }
 
-            Settings.LastOfflineUsername = username;
+            _core.Settings.Current.LastOfflineUsername = username;
             _core.Settings.Save();
             SwitchToMainScreen();
         }
@@ -149,225 +154,307 @@ namespace MinecraftModder
         private void SwitchToMainScreen()
         {
             var session = _core.Accounts.Current!;
-            WelcomeText.Text = $"Hoş geldin, {session.Username}!";
-            AccountText.Text = session.UserType == "msa" ? "Microsoft hesabı" : "Çevrimdışı hesap";
+            AccountText.Text = _core.Accounts.IsMicrosoft ? $"{session.Username} · Microsoft" : $"{session.Username} · çevrimdışı";
+            ((DiscoverPage)_pages[ShellPage.Discover]).SetUserName(session.Username ?? "Oyuncu");
             LoginScreen.Visibility = Visibility.Collapsed;
+            LoginDisc.AlwaysSpin = false;
             MainScreen.Visibility = Visibility.Visible;
-            _ = SearchAsync(reset: true);
+            TabDiscover.IsChecked = true;
         }
 
-        private async void SignOutBtn_Click(object sender, RoutedEventArgs e)
+        public async Task SignOutAsync()
         {
-            if (_core.Accounts.Current?.UserType == "msa") await _core.Accounts.SignOutAsync();
-            XboxLoggedInPanel.Visibility = Visibility.Collapsed;
-            XboxLoggedOutPanel.Visibility = Visibility.Visible;
-            XboxLoginStatus.Text = "";
+            // Çevrimdışı oyuncu çıkınca kayıtlı Microsoft hesabı silinmesin.
+            if (_core.Accounts.IsMicrosoft) await _core.Accounts.SignOutAsync();
             MainScreen.Visibility = Visibility.Collapsed;
             LoginScreen.Visibility = Visibility.Visible;
+            LoginDisc.AlwaysSpin = true;
+            await ShowRememberedAccountAsync();
+        }
+
+        // ==================== SAYFALAR ====================
+
+        private void Tab_Checked(object sender, RoutedEventArgs e)
+        {
+            if (sender is RadioButton { Tag: string tag } && Enum.TryParse(tag, out ShellPage page)) ShowPageCore(page);
+        }
+
+        public void ShowPage(ShellPage page)
+        {
+            var tab = page switch
+            {
+                ShellPage.Mods => TabMods,
+                ShellPage.Packs => TabPacks,
+                ShellPage.Looks => TabLooks,
+                ShellPage.Discs => TabDiscs,
+                ShellPage.Settings => TabSettings,
+                _ => TabDiscover
+            };
+            if (tab.IsChecked == true) ShowPageCore(page);
+            else tab.IsChecked = true; // Tab_Checked sayfayı gösterir
+        }
+
+        private void ShowPageCore(ShellPage page)
+        {
+            foreach (var (key, control) in _pages)
+            {
+                bool show = key == page;
+                if (show && control.Visibility != Visibility.Visible)
+                {
+                    control.Visibility = Visibility.Visible;
+                    control.BeginAnimation(OpacityProperty, new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(180)));
+                }
+                else if (!show)
+                {
+                    control.Visibility = Visibility.Collapsed;
+                }
+            }
+        }
+
+        public void RefreshProviders()
+        {
+            foreach (var page in _pages.Values.OfType<BrowsePage>()) page.BuildProviderChips();
+        }
+
+        // ==================== TAKILI DİSK (aktif profil) ====================
+
+        public void SetActiveProfile(GameProfile profile)
+        {
+            bool changed = profile.Id != _activeProfile?.Id;
+            _activeProfile = profile;
+            _core.SetActiveProfile(profile);
+            UpdateActiveProfileUi(animate: changed);
+            ActiveProfileChanged?.Invoke(this, EventArgs.Empty);
+        }
+
+        private void UpdateActiveProfileUi(bool animate)
+        {
+            PillName.Text = _activeProfile.Name;
+            PillVersion.Text = _activeProfile.DisplayVersion;
+            PillDisc.Profile = _activeProfile;
+            PillDisc.Reload();
+            PlayBlock.InsertDisc(_activeProfile, animate);
+            PlayBlock.ToolTip = $"Oyna: {_activeProfile.Name} ({_activeProfile.DisplayVersion})";
+        }
+
+        private void DiscPill_Click(object sender, RoutedEventArgs e)
+        {
+            var active = _activeProfile;
+            PopupDiscs.ItemsSource = _core.Profiles.All.Select(p => new ProfileView(p, p.Id == active.Id)).ToList();
+            DiscPopup.IsOpen = true;
+        }
+
+        private void PopupDisc_Click(object sender, RoutedEventArgs e)
+        {
+            DiscPopup.IsOpen = false;
+            if (sender is not FrameworkElement { Tag: ProfileView view } || view.IsActive) return;
+            if (_isBusy)
+            {
+                Notify("Bir işlem sürerken disk değiştirilemez.");
+                return;
+            }
+            SetActiveProfile(view.Profile);
+            Notify($"'{view.Profile.Name}' takıldı.");
+        }
+
+        private void AllDiscs_Click(object sender, RoutedEventArgs e)
+        {
+            DiscPopup.IsOpen = false;
+            ShowPage(ShellPage.Discs);
+        }
+
+        public void RaiseContentChanged()
+        {
+            PlayBlock.RefreshDisc();
+            PillDisc.Reload();
+            ContentChanged?.Invoke(this, EventArgs.Empty);
         }
 
         // ==================== OYNA ====================
 
-        private async void PlayBtn_Click(object sender, RoutedEventArgs e)
+        private void PlayBlock_Click(object sender, RoutedEventArgs e) => Play();
+
+        public async void Play()
         {
-            if (_gameProcess is { HasExited: false })
+            if (IsGameRunning)
             {
-                StatusText.Text = "Oyun zaten açık.";
+                Notify("Oyun zaten açık.");
                 return;
             }
-
             var session = _core.Accounts.Current;
             if (session == null)
             {
-                SignOutBtn_Click(sender, e);
+                await SignOutAsync();
                 return;
             }
 
-            var profile = ActiveProfile;
-            Process? process = null;
-            bool ok = await RunBusyAsync($"'{profile.Name}' hazırlanıyor...",
-                async (progress, ct) => process = await _core.Launcher.LaunchAsync(profile, session, progress, ct));
-            if (!ok || process == null) return;
+            var profile = _activeProfile;
+            LaunchResult? launch = null;
+            _launching = true;
+            PlayBlock.SetState("Hazırlanıyor", spinDisc: true);
+            bool ok;
+            try
+            {
+                ok = await RunBusyAsync($"'{profile.Name}' hazırlanıyor...",
+                    async (progress, ct) => launch = await _core.Launcher.LaunchAsync(profile, session, progress, ct));
+            }
+            finally
+            {
+                _launching = false;
+            }
+            if (!ok || launch == null)
+            {
+                PlayBlock.SetState(null, spinDisc: false);
+                return;
+            }
 
+            var process = launch.Process;
             _gameProcess = process;
             var startedAt = DateTimeOffset.Now;
-            PlayBtn.IsEnabled = false;
-            PlayBtn.Content = "Oyun açık";
-            StatusText.Text = $"İyi oyunlar! ({profile.Name})";
+            PlayBlock.SetState("Oyunda", spinDisc: true);
+            if (!launch.Compatibility.IsClean) RaiseContentChanged();
+            Notify(launch.Compatibility.Fixed.Count == 0
+                ? $"İyi oyunlar! ({profile.Name})"
+                : $"İyi oyunlar! Açmadan önce {launch.Compatibility.Fixed.Count} şeyi düzelttim: {launch.Compatibility.Fixed[0]}");
 
             process.EnableRaisingEvents = true;
             process.Exited += (_, _) => Dispatcher.Invoke(() => OnGameExited(profile, process, startedAt));
             if (process.HasExited) OnGameExited(profile, process, startedAt);
-            else if (Settings.HideLauncherWhilePlaying) WindowState = WindowState.Minimized;
+            else if (_core.Settings.Current.HideLauncherWhilePlaying) WindowState = WindowState.Minimized;
         }
 
-        private void OnGameExited(GameProfile profile, Process process, DateTimeOffset startedAt)
+        private async void OnGameExited(GameProfile profile, Process process, DateTimeOffset startedAt)
         {
             if (_gameProcess != process) return;
             _gameProcess = null;
-            PlayBtn.IsEnabled = !_isBusy;
-            PlayBtn.Content = "▶  OYNA";
+            PlayBlock.SetState(null, spinDisc: false);
             if (WindowState == WindowState.Minimized) WindowState = WindowState.Normal;
             Activate();
 
             int exitCode;
             try { exitCode = process.ExitCode; } catch { exitCode = 0; }
-            StatusText.Text = "Hazır!";
             if (exitCode == 0) return;
 
             string? crashReport = GameLauncher.FindLatestCrashReport(profile, startedAt);
-            string message = $"Oyun beklenmedik şekilde kapandı (kod {exitCode}).\n\n" +
-                             "Genelde sebep uyumsuz ya da bozuk bir moddur. 'Kurulu' sekmesindeki 'Onar' butonunu dene; " +
-                             "sorun sürerse en son kurduğun modu kapatıp tekrar aç.";
-            if (crashReport == null)
-            {
-                MessageBox.Show(message, "Oyun kapandı", MessageBoxButton.OK, MessageBoxImage.Warning);
-                return;
-            }
-
-            if (MessageBox.Show(message + "\n\nÇökme raporunu açmak ister misin?", "Oyun kapandı",
-                    MessageBoxButton.YesNo, MessageBoxImage.Warning) == MessageBoxResult.Yes)
-                OpenPath(crashReport);
+            string message = "Genelde sebep uyumsuz ya da bozuk bir moddur. Diski düzenleyip 'Onar'a bas; " +
+                             "sorun sürerse en son kurduğun modu kapatıp tekrar dene.";
+            var buttons = crashReport == null ? new[] { "Diski düzenle", "Tamam" } : new[] { "Diski düzenle", "Çökme raporu", "Tamam" };
+            int answer = await AskAsync($"Oyun kapandı (kod {exitCode})", message, buttons);
+            if (answer == 0) OpenProfileDetail(profile);
+            else if (answer == 1 && crashReport != null) OpenPath(crashReport);
         }
 
-        // ==================== KEŞFET / ARA ====================
+        // ==================== SÜRÜKLE-BIRAK: HER TÜRLÜ DOSYA ====================
 
-        private void KindCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        // Kullanıcı nereden indirdiği belli olmayan mod/shader/paket dosyasını pencereye bırakır; gerisini launcher halleder.
+        private async void Window_Drop(object sender, DragEventArgs e)
         {
-            if (!_uiReady) return;
-            RefreshProviders();
+            if (MainScreen.Visibility != Visibility.Visible || e.Data.GetData(DataFormats.FileDrop) is not string[] files || files.Length == 0) return;
+            await ImportFilesAsync(files);
         }
 
-        private void RefreshProviders()
+        public async Task ImportFilesAsync(IReadOnlyList<string> files)
         {
-            var current = ProviderCombo.SelectedItem as IContentProvider;
-            var providers = _core.Content.ForKind(SelectedKind).ToList();
-            ProviderCombo.ItemsSource = providers;
-            ProviderCombo.SelectedItem = providers.Contains(current!) ? current : providers.FirstOrDefault();
-            UpdateSearchHint();
-        }
-
-        private void ProviderCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
-        {
-            if (_uiReady && MainScreen.Visibility == Visibility.Visible) _ = SearchAsync(reset: true);
-        }
-
-        private void SearchBox_KeyDown(object sender, KeyEventArgs e)
-        {
-            if (e.Key == Key.Enter) _ = SearchAsync(reset: true);
-        }
-
-        private void SearchBtn_Click(object sender, RoutedEventArgs e) => _ = SearchAsync(reset: true);
-
-        private void LoadMoreBtn_Click(object sender, RoutedEventArgs e) => _ = SearchAsync(reset: false);
-
-        private void UpdateSearchHint()
-        {
-            SearchHintText.Text = SelectedKind switch
-            {
-                ContentKind.Modpack => "Mod paketleri kendi yeni profillerine kurulur; mevcut profilin bozulmaz. Arama boşken en popülerler gösterilir.",
-                ContentKind.Mod when !ActiveProfile.Loader.SupportsMods() =>
-                    $"'{ActiveProfile.Name}' bir Vanilla profili; mod kurmak için Profiller sekmesinden Fabric profili seç ya da oluştur.",
-                _ => $"Sadece '{ActiveProfile.Name}' ({ActiveProfile.DisplayVersion}) ile uyumlu sonuçlar gösteriliyor. Arama boşken en popülerler gelir."
-            };
-        }
-
-        private async Task SearchAsync(bool reset)
-        {
-            if (ProviderCombo.SelectedItem is not IContentProvider provider) return;
-            if (!reset && _lastSearch == null) return;
-
-            _searchCts?.Cancel();
-            var cts = _searchCts = new CancellationTokenSource();
-
-            var kind = SelectedKind;
-            var request = reset
-                ? new SearchRequest
-                {
-                    Query = SearchBox.Text.Trim(),
-                    Kind = kind,
-                    GameVersion = kind == ContentKind.Modpack ? null : ActiveProfile.GameVersion,
-                    Loader = kind == ContentKind.Mod ? ActiveProfile.Loader : null,
-                    Limit = 30
-                }
-                : _lastSearch! with { Offset = _lastSearch.Offset + _lastSearch.Limit };
-
-            if (reset)
-            {
-                _results.Clear();
-                LoadMoreBtn.Visibility = Visibility.Collapsed;
-            }
-            if (!_isBusy) StatusText.Text = $"{provider.DisplayName} üzerinde aranıyor...";
-
-            SearchPage page;
-            try
-            {
-                page = await provider.SearchAsync(request, cts.Token);
-            }
-            catch (OperationCanceledException) when (cts.IsCancellationRequested)
-            {
-                return;
-            }
-            catch (Exception ex)
-            {
-                if (!_isBusy) StatusText.Text = "Arama başarısız: " + FriendlyMessage(ex);
-                return;
-            }
-            if (cts.IsCancellationRequested) return;
-
-            _lastSearch = request;
-            foreach (var item in page.Items) _results.Add(new SearchResultView(item, IsInstalled(item)));
-            LoadMoreBtn.Visibility = page.HasMore ? Visibility.Visible : Visibility.Collapsed;
-
-            if (!_isBusy)
-            {
-                StatusText.Text = _results.Count == 0
-                    ? "Sonuç bulunamadı. Farklı bir kelime ya da kaynak dene."
-                    : $"{_results.Count} sonuç gösteriliyor. Kurmak için 'Kur'a bas.";
-            }
-        }
-
-        private bool IsInstalled(ContentItem item)
-        {
-            if (item.Kind == ContentKind.Modpack)
-                return _core.Profiles.All.Any(p => p.Source?.ProviderId == item.ProviderId && p.Source.ProjectId == item.Id);
-            return ContentInstaller.IsInstalled(ActiveProfile, item);
-        }
-
-        private async void InstallItemBtn_Click(object sender, RoutedEventArgs e)
-        {
-            if (sender is Button { Tag: SearchResultView view }) await InstallAsync(view);
-        }
-
-        private async void ResultsList_MouseDoubleClick(object sender, MouseButtonEventArgs e)
-        {
-            if (ResultsList.SelectedItem is SearchResultView { CanInstall: true } view) await InstallAsync(view);
-        }
-
-        private async Task InstallAsync(SearchResultView view)
-        {
-            var item = view.Item;
-            if (item.Kind == ContentKind.Modpack)
-            {
-                await InstallModpackAsync(view);
-                return;
-            }
-
-            var profile = ActiveProfile;
-            ContentInstallResult? result = null;
-            bool ok = await RunBusyAsync($"{item.Title} kuruluyor...",
-                async (progress, ct) => result = await _core.Installer.InstallAsync(profile, item, progress, ct));
+            var profile = _activeProfile;
+            ImportResult? result = null;
+            bool ok = await RunBusyAsync("Dosyalar ekleniyor...",
+                async (progress, ct) => result = await _core.Importer.ImportAsync(profile, files, progress, ct));
             if (!ok || result == null) return;
 
-            if (result.Installed.Count > 0 || result.AlreadyInstalled.Count > 0) view.MarkInstalled();
+            RaiseContentChanged();
+            if (result.NewDisks.Count > 0) SetActiveProfile(result.NewDisks[^1]);
 
-            // Her şey yolundaysa pencere açıp kullanıcıyı yormuyoruz; sadece alt barda yazıyor.
+            var text = new StringBuilder();
+            if (result.Added.Count > 0) text.AppendLine($"'{profile.Name}' diskine eklendi:\n• " + string.Join("\n• ", result.Added) + "\n");
+            if (result.Compatibility.Fixed.Count > 0) text.AppendLine("Kendiliğimden düzelttiklerim:\n• " + string.Join("\n• ", result.Compatibility.Fixed) + "\n");
+            if (result.Skipped.Count > 0) text.AppendLine("Eklenemeyenler:\n• " + string.Join("\n• ", result.Skipped));
+
+            if (result.Suggestion is { } suggestion)
+            {
+                string where = suggestion.ExistingDisk != null ? $"'{suggestion.ExistingDisk.Name}' diskine" : $"yeni bir '{suggestion.SuggestedName}'e";
+                text.AppendLine($"\n{suggestion.FileNames.Count} mod bu diske uymuyor; {suggestion.Loader} {suggestion.GameVersion} istiyor. Onları {where} taşıyayım mı?");
+                if (await AskAsync("Dosyalar eklendi", text.ToString().Trim(), "Evet, taşı", "Hayır") != 0) return;
+
+                (GameProfile Disk, ImportResult Result)? moved = null;
+                if (!await RunBusyAsync("Yeni disk hazırlanıyor...",
+                        async (progress, ct) => moved = await _core.Importer.MoveToSuggestedDiskAsync(profile, suggestion, progress, ct))
+                    || moved == null) return;
+                SetActiveProfile(moved.Value.Disk);
+                RaiseContentChanged();
+                Notify($"✓ '{moved.Value.Disk.Name}' takıldı. Oynamak için bloğa bas!");
+                return;
+            }
+
+            bool onlyAdded = result.Skipped.Count == 0 && result.Compatibility.IsClean;
+            if (onlyAdded) Notify($"✓ {result.Added.Count} dosya '{profile.Name}' diskine eklendi.");
+            else await AskAsync("Dosyalar eklendi", text.ToString().Trim(), "Tamam");
+        }
+
+        // ==================== KARTLAR: KUR / FAVORİ ====================
+
+        public bool IsInstalled(ContentItem item)
+        {
+            if (_activeProfile == null) return false;
+            if (item.Kind == ContentKind.Modpack)
+                return _core.Profiles.All.Any(p => p.Source?.ProviderId == item.ProviderId && p.Source.ProjectId == item.Id);
+            return ContentInstaller.IsInstalled(_activeProfile, item);
+        }
+
+        public bool IsFavorite(ContentItem item) => _core.Settings.Current.FavoriteKeys.Contains(item.Key);
+
+        public void ToggleFavorite(CardViewModel card)
+        {
+            var favorites = _core.Settings.Current.FavoriteKeys;
+            bool added = !favorites.Remove(card.Item.Key);
+            if (added) favorites.Insert(0, card.Item.Key);
+            _core.Settings.Save();
+            Notify(added ? $"♥ {card.Item.Title} favorilere eklendi (Keşfet'te görünür)." : $"{card.Item.Title} favorilerden çıkarıldı.");
+            ContentChanged?.Invoke(this, EventArgs.Empty);
+        }
+
+        public async Task InstallAsync(CardViewModel card)
+        {
+            if (card.IsBusy) return;
+            if (_isBusy)
+            {
+                Notify("Önce devam eden işin bitmesini bekle.");
+                return;
+            }
+            if (card.Item.Kind == ContentKind.Modpack)
+            {
+                await InstallModpackAsync(card);
+                return;
+            }
+            if (IsGameRunning)
+            {
+                await AskAsync("Oyun açık", "Oyun açıkken mod eklenemez. Önce oyunu kapat.", "Tamam");
+                return;
+            }
+
+            var item = card.Item;
+            var profile = _activeProfile;
+            ContentInstallResult? result = null;
+            card.IsBusy = true;
+            bool ok;
+            try
+            {
+                ok = await RunBusyAsync($"{item.Title} kuruluyor...",
+                    async (progress, ct) => result = await _core.Installer.InstallAsync(profile, item, progress, ct));
+            }
+            finally
+            {
+                card.IsBusy = false;
+            }
+            RaiseContentChanged();
+            if (!ok || result == null) return;
+
+            // Her şey yolundaysa kutu açıp yormuyoruz; sadece bilgi balonunda yazıyor.
             if (result.Skipped.Count == 0 && result.Warnings.Count == 0)
             {
                 int extras = result.Installed.Count - 1;
-                StatusText.Text = result.Installed.Count == 0
+                Notify(result.Installed.Count == 0
                     ? $"{item.Title} zaten kurulu."
-                    : $"✓ {item.Title} kuruldu" + (extras > 0 ? $" (+{extras} gerekli ek)" : "") + $" → {profile.Name}";
+                    : $"✓ {item.Title} '{profile.Name}' diskine kuruldu" + (extras > 0 ? $" (+{extras} gerekli ek)" : "") + ".");
                 return;
             }
 
@@ -375,434 +462,172 @@ namespace MinecraftModder
             if (result.Installed.Count > 0) text.AppendLine("Kurulanlar:\n• " + string.Join("\n• ", result.Installed) + "\n");
             if (result.Skipped.Count > 0) text.AppendLine("Kurulamayanlar:\n• " + string.Join("\n• ", result.Skipped.Select(s => $"{s.Title}: {s.Reason}")) + "\n");
             if (result.Warnings.Count > 0) text.AppendLine("Not:\n• " + string.Join("\n• ", result.Warnings));
-            StatusText.Text = result.Installed.Count > 0 ? $"{item.Title} kuruldu (bazı uyarılar var)." : $"{item.Title} kurulamadı.";
+            string title = result.Installed.Count > 0 ? $"{item.Title} kuruldu" : $"{item.Title} kurulamadı";
 
             var withPage = result.Skipped.FirstOrDefault(s => s.WebUrl != null);
             if (withPage != null)
             {
-                if (MessageBox.Show(text + $"\n'{withPage.Title}' sayfasını tarayıcıda açayım mı?", "Kurulum", MessageBoxButton.YesNo, MessageBoxImage.Information) == MessageBoxResult.Yes)
-                    OpenPath(withPage.WebUrl!);
+                if (await AskAsync(title, text.ToString().Trim(), "Sayfasını aç", "Tamam") == 0) OpenPath(withPage.WebUrl!);
             }
             else
             {
-                MessageBox.Show(text.ToString(), "Kurulum", MessageBoxButton.OK, MessageBoxImage.Information);
+                await AskAsync(title, text.ToString().Trim(), "Tamam");
             }
         }
 
-        private async Task InstallModpackAsync(SearchResultView view)
+        private async Task InstallModpackAsync(CardViewModel card)
         {
-            var item = view.Item;
+            var item = card.Item;
             if (_core.Content.Get(item.ProviderId) is not IModpackProvider provider) return;
 
-            if (MessageBox.Show($"'{item.Title}' kendi yeni profiline kurulacak. Mevcut profillerin etkilenmez.\n\nDevam edilsin mi?",
-                    "Mod paketi kur", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes)
+            if (await AskAsync(item.Title, "Bu paket yeni bir disk olarak kurulacak. Diğer disklerin hiç etkilenmez.\n\nBüyük paketlerin inmesi birkaç dakika sürebilir.",
+                    "Kur", "Vazgeç") != 0)
                 return;
 
             ModpackInstallResult? result = null;
-            bool ok = await RunBusyAsync($"{item.Title} kuruluyor...",
-                async (progress, ct) => result = await _core.Modpacks.InstallAsync(provider, item, null, progress, ct));
+            card.IsBusy = true;
+            bool ok;
+            try
+            {
+                ok = await RunBusyAsync($"{item.Title} kuruluyor...",
+                    async (progress, ct) => result = await _core.Modpacks.InstallAsync(provider, item, null, progress, ct));
+            }
+            finally
+            {
+                card.IsBusy = false;
+            }
             if (!ok || result == null) return;
 
-            view.MarkInstalled();
-            ShowModpackResult(result);
-        }
-
-        private void ShowModpackResult(ModpackInstallResult result)
-        {
             var profile = result.Profile;
             SetActiveProfile(profile);
+            RaiseContentChanged();
 
-            var text = new StringBuilder($"'{profile.Name}' kuruldu ve aktif profil yapıldı.\n{profile.DisplayVersion}\n");
+            string message = $"'{profile.Name}' diski hazır ve takıldı ({profile.DisplayVersion}).";
             if (result.Downloads.Failed.Count > 0)
             {
-                text.AppendLine($"\n{result.Downloads.Failed.Count} dosya inemedi. 'Kurulu' sekmesinden 'Onar' ile tekrar deneyebilirsin:");
-                foreach (var f in result.Downloads.Failed.Take(5)) text.AppendLine("• " + f.Item.DisplayName);
-                if (result.Downloads.Failed.Count > 5) text.AppendLine("• ...");
+                message += $"\n\n{result.Downloads.Failed.Count} dosya inemedi. Diski düzenleyip 'Onar' ile tekrar deneyebilirsin:\n• " +
+                           string.Join("\n• ", result.Downloads.Failed.Take(5).Select(f => f.Item.DisplayName));
             }
             else
             {
-                text.AppendLine("\nOynamak için yukarıdaki OYNA'ya bas. (İlk açılış loader kurulumu yüzünden biraz uzun sürebilir.)");
+                message += "\n\nİlk açılış biraz uzun sürebilir (mod yükleyici kuruluyor).";
             }
-            StatusText.Text = $"✓ {profile.Name} kuruldu.";
-            MessageBox.Show(text.ToString(), "Mod paketi kuruldu", MessageBoxButton.OK,
-                result.Downloads.Success ? MessageBoxImage.Information : MessageBoxImage.Warning);
+            if (await AskAsync("Paket kuruldu!", message, "Hemen oyna", "Sonra") == 0) Play();
         }
 
-        // ==================== KURULU İÇERİK ====================
+        // ==================== DİSK DETAYI / YENİ DİSK ====================
 
-        private void MainTabControl_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        public void OpenProfileDetail(GameProfile profile)
         {
-            // İçteki ComboBox/ListBox'ların SelectionChanged olayları da buraya kadar kabarır.
-            if (!ReferenceEquals(e.OriginalSource, MainTabControl)) return;
+            var view = new ProfileDetailView(this, profile);
+            view.CloseRequested += (_, _) => CloseOverlay();
+            ShowOverlay(view);
+        }
 
-            switch (MainTabControl.SelectedIndex)
+        public void OpenNewProfile()
+        {
+            var view = new NewProfileView(this);
+            view.CloseRequested += (_, _) => CloseOverlay();
+            ShowOverlay(view);
+        }
+
+        private void ShowOverlay(UserControl content)
+        {
+            OverlayHost.Content = content;
+            OverlayLayer.Visibility = Visibility.Visible;
+            var ease = new BackEase { EasingMode = EasingMode.EaseOut, Amplitude = 0.3 };
+            OverlayScale.BeginAnimation(System.Windows.Media.ScaleTransform.ScaleXProperty, new DoubleAnimation(0.85, 1, TimeSpan.FromMilliseconds(260)) { EasingFunction = ease });
+            OverlayScale.BeginAnimation(System.Windows.Media.ScaleTransform.ScaleYProperty, new DoubleAnimation(0.85, 1, TimeSpan.FromMilliseconds(260)) { EasingFunction = ease });
+            OverlayLayer.BeginAnimation(OpacityProperty, new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(180)));
+        }
+
+        private void CloseOverlay()
+        {
+            if (OverlayLayer.Visibility != Visibility.Visible) return;
+            Keyboard.ClearFocus(); // isim kutusundaki değişiklik kaydedilsin (LostFocus)
+            OverlayLayer.Visibility = Visibility.Collapsed;
+            OverlayHost.Content = null;
+            ((ProfilesPage)_pages[ShellPage.Discs]).Refresh();
+        }
+
+        private void OverlayLayer_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+        {
+            // Sadece karartılmış boşluğa tıklayınca kapanır; panelin içi değil.
+            if (ReferenceEquals(e.OriginalSource, OverlayLayer)) CloseOverlay();
+        }
+
+        private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
+        {
+            if (e.Key != Key.Escape) return;
+            if (DialogLayer.Visibility == Visibility.Visible) CloseDialog(-1);
+            else if (OverlayLayer.Visibility == Visibility.Visible) CloseOverlay();
+            else return;
+            e.Handled = true;
+        }
+
+        // ==================== SORU KUTUSU / BİLGİ BALONU ====================
+
+        public Task<int> AskAsync(string title, string message, params string[] buttons)
+        {
+            _dialog?.TrySetResult(-1);
+            var tcs = _dialog = new TaskCompletionSource<int>();
+
+            DialogTitle.Text = title;
+            DialogMessage.Text = message;
+            DialogButtons.Children.Clear();
+            if (buttons.Length == 0) buttons = new[] { "Tamam" };
+            // Birinci buton (önerilen) renkli ve en sağda dursun.
+            for (int i = buttons.Length - 1; i >= 0; i--)
             {
-                case 1: _ = RefreshInstalledAsync(); break;
-                case 2: RefreshProfiles(); break;
-                case 3: LoadSettingsIntoUi(); break;
-            }
-        }
-
-        private async Task RefreshInstalledAsync()
-        {
-            var profile = ActiveProfile;
-            InstalledTitle.Text = $"{profile.Name} · içerik";
-            InstalledSummary.Text = "Taranıyor...";
-
-            IReadOnlyList<ContentEntry> entries;
-            try
-            {
-                entries = await _core.ProfileContent.RefreshAsync(profile);
-            }
-            catch (Exception ex)
-            {
-                InstalledSummary.Text = "Liste okunamadı: " + FriendlyMessage(ex);
-                return;
-            }
-            if (profile != ActiveProfile) return;
-
-            var views = entries.Select(e => new ContentEntryView(e, ProfileContentService.IsMissing(profile, e))).ToList();
-            InstalledList.ItemsSource = views;
-            SelectAllCheck.IsChecked = false;
-
-            int mods = entries.Count(e => e.Kind == ContentKind.Mod);
-            int shaders = entries.Count(e => e.Kind == ContentKind.ShaderPack);
-            int packs = entries.Count(e => e.Kind == ContentKind.ResourcePack);
-            int disabled = entries.Count(e => !e.Enabled);
-            int missing = views.Count(v => v.IsMissing);
-
-            var parts = new List<string> { $"{mods} mod" };
-            if (shaders > 0) parts.Add($"{shaders} shader");
-            if (packs > 0) parts.Add($"{packs} kaynak paketi");
-            if (disabled > 0) parts.Add($"{disabled} kapalı");
-            if (missing > 0) parts.Add($"{missing} eksik (Onar'a bas)");
-            var duplicates = ProfileDoctor.FindDuplicates(profile);
-            if (duplicates.Count > 0) parts.Add($"⚠ {duplicates.Count} mod iki kez kurulu");
-            InstalledSummary.Text = string.Join(" · ", parts) + ".  Ctrl/Shift ile birden çok seçebilirsin.";
-        }
-
-        private List<ContentEntry> SelectedEntries() => InstalledList.SelectedItems.Cast<ContentEntryView>().Select(v => v.Entry).ToList();
-
-        private void InstalledList_SelectionChanged(object sender, SelectionChangedEventArgs e)
-        {
-            int total = InstalledList.Items.Count;
-            SelectAllCheck.IsChecked = total > 0 && InstalledList.SelectedItems.Count == total;
-        }
-
-        private void SelectAllCheck_Click(object sender, RoutedEventArgs e)
-        {
-            if (SelectAllCheck.IsChecked == true) InstalledList.SelectAll();
-            else InstalledList.UnselectAll();
-        }
-
-        private async void EnableSelectedBtn_Click(object sender, RoutedEventArgs e) => await SetSelectedEnabledAsync(true);
-        private async void DisableSelectedBtn_Click(object sender, RoutedEventArgs e) => await SetSelectedEnabledAsync(false);
-
-        private async Task SetSelectedEnabledAsync(bool enabled)
-        {
-            var selected = SelectedEntries();
-            if (selected.Count == 0)
-            {
-                StatusText.Text = "Önce listeden seçim yap (Ctrl/Shift ile çoklu seçim).";
-                return;
-            }
-            await ApplyContentChangeAsync(() => _core.ProfileContent.SetEnabled(ActiveProfile, selected, enabled));
-            StatusText.Text = $"{selected.Count} öğe {(enabled ? "açıldı" : "kapatıldı")}.";
-        }
-
-        private async void EntryToggle_Click(object sender, RoutedEventArgs e)
-        {
-            if (sender is not CheckBox { Tag: ContentEntryView view } box) return;
-            bool enabled = box.IsChecked == true;
-            await ApplyContentChangeAsync(() => _core.ProfileContent.SetEnabled(ActiveProfile, new[] { view.Entry }, enabled));
-        }
-
-        private async void DeleteSelectedBtn_Click(object sender, RoutedEventArgs e)
-        {
-            var selected = SelectedEntries();
-            if (selected.Count == 0)
-            {
-                StatusText.Text = "Önce listeden seçim yap (Ctrl/Shift ile çoklu seçim).";
-                return;
+                int index = i;
+                var button = new Button
+                {
+                    Content = buttons[i],
+                    Style = (Style)FindResource(i == 0 ? "Btn" : "SoftBtn"),
+                    Margin = new Thickness(DialogButtons.Children.Count == 0 ? 0 : 8, 0, 0, 0)
+                };
+                button.Click += (_, _) => CloseDialog(index);
+                DialogButtons.Children.Add(button);
             }
 
-            string warning = selected.Any(s => s.Origin is ContentOrigin.Pack or ContentOrigin.PackOverride)
-                ? "\n\nDikkat: seçtiklerinin bir kısmı mod paketinin parçası; silersen paket düzgün çalışmayabilir. Silmek yerine 'Kapat' daha güvenli."
-                : "";
-            if (MessageBox.Show($"{selected.Count} öğe kalıcı olarak silinsin mi?{warning}", "Emin misin?",
-                    MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes)
-                return;
-
-            await ApplyContentChangeAsync(() => _core.ProfileContent.Remove(ActiveProfile, selected));
-            StatusText.Text = $"{selected.Count} öğe silindi.";
+            DialogLayer.Visibility = Visibility.Visible;
+            DialogLayer.BeginAnimation(OpacityProperty, new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(150)));
+            ((Button)DialogButtons.Children[^1]).Focus();
+            return tcs.Task;
         }
 
-        private async Task ApplyContentChangeAsync(Action change)
+        private void CloseDialog(int result)
         {
-            if (_gameProcess is { HasExited: false })
-            {
-                MessageBox.Show("Oyun açıkken modlar değiştirilemez. Önce oyunu kapat.", "Oyun açık", MessageBoxButton.OK, MessageBoxImage.Information);
-                await RefreshInstalledAsync();
-                return;
-            }
-
-            try
-            {
-                change();
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show(FriendlyMessage(ex), "Değiştirilemedi", MessageBoxButton.OK, MessageBoxImage.Warning);
-            }
-            await RefreshInstalledAsync();
+            DialogLayer.Visibility = Visibility.Collapsed;
+            var tcs = _dialog;
+            _dialog = null;
+            tcs?.TrySetResult(result);
         }
 
-        private async void RepairBtn_Click(object sender, RoutedEventArgs e)
+        public void Notify(string text)
         {
-            var profile = ActiveProfile;
-            RepairReport? report = null;
-            bool ok = await RunBusyAsync("Dosyalar kontrol ediliyor...",
-                async (progress, ct) => report = await _core.Doctor.VerifyAndRepairAsync(profile, progress, ct));
-            await RefreshInstalledAsync();
-            if (!ok || report == null) return;
-
-            if (report.IsHealthy)
-            {
-                StatusText.Text = $"✓ Her şey yolunda! {report.Checked} dosya kontrol edildi.";
-                return;
-            }
-
-            var text = new StringBuilder();
-            if (report.Repaired > 0) text.AppendLine($"✓ {report.Repaired} bozuk/eksik dosya yeniden indirildi.\n");
-            if (report.Failed.Count > 0) text.AppendLine("İndirilemeyenler:\n• " + string.Join("\n• ", report.Failed.Take(8)) + "\n");
-            if (report.Unrepairable.Count > 0) text.AppendLine("Kaynağı bilinmeyen eksik dosyalar (elle eklenmiş olabilir):\n• " + string.Join("\n• ", report.Unrepairable.Take(8)) + "\n");
-            if (report.Duplicates.Count > 0) text.AppendLine("İki kez kurulu modlar (birini kapat ya da sil):\n• " + string.Join("\n• ", report.Duplicates));
-            StatusText.Text = report.Repaired > 0 ? $"✓ {report.Repaired} dosya onarıldı." : "Kontrol tamamlandı.";
-            MessageBox.Show(text.ToString(), "Mod Doktoru", MessageBoxButton.OK, MessageBoxImage.Information);
+            ToastText.Text = text;
+            ShowToast();
+            _toastTimer.Stop();
+            if (!_isBusy) _toastTimer.Start();
         }
 
-        private void OpenModsFolderBtn_Click(object sender, RoutedEventArgs e)
+        private void ShowToast()
         {
-            string mods = Path.Combine(ActiveProfile.GameDirectory, "mods");
-            Directory.CreateDirectory(mods);
-            OpenPath(mods);
+            if (Toast.Visibility == Visibility.Visible) return;
+            Toast.Visibility = Visibility.Visible;
+            Toast.BeginAnimation(OpacityProperty, new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(160)));
         }
 
-        private async void RefreshInstalledBtn_Click(object sender, RoutedEventArgs e) => await RefreshInstalledAsync();
+        private void HideToast() => Toast.Visibility = Visibility.Collapsed;
 
-        // ==================== PROFİLLER ====================
+        // ==================== UZUN İŞLEMLER ====================
 
-        private void RefreshProfiles()
-        {
-            var all = _core.Profiles.All;
-            ProfilesList.ItemsSource = all.Select(p => new ProfileView(p, p.Id == ActiveProfile.Id)).ToList();
-
-            _suppressProfileCombo = true;
-            ActiveProfileCombo.ItemsSource = all;
-            ActiveProfileCombo.SelectedItem = all.FirstOrDefault(p => p.Id == ActiveProfile.Id);
-            _suppressProfileCombo = false;
-        }
-
-        private void SetActiveProfile(GameProfile profile)
-        {
-            bool changed = profile.Id != _activeProfile?.Id;
-            _activeProfile = profile;
-            _core.SetActiveProfile(profile);
-            RefreshProfiles();
-            UpdateSearchHint();
-            UpdateRamInfo();
-
-            // Uyumluluk süzgeci (sürüm/loader) değişti; mod sonuçlarını yeni profile göre yenile.
-            if (changed && SelectedKind != ContentKind.Modpack && MainScreen.Visibility == Visibility.Visible) _ = SearchAsync(reset: true);
-            if (MainTabControl.SelectedIndex == 1) _ = RefreshInstalledAsync();
-        }
-
-        private void ActiveProfileCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
-        {
-            if (_suppressProfileCombo || ActiveProfileCombo.SelectedItem is not GameProfile profile || profile.Id == ActiveProfile.Id) return;
-            if (_isBusy)
-            {
-                StatusText.Text = "İşlem sürerken profil değiştirilemez.";
-                RefreshProfiles();
-                return;
-            }
-            SetActiveProfile(profile);
-            StatusText.Text = $"Aktif profil: {profile.Name}";
-        }
-
-        private GameProfile? SelectedProfile => (ProfilesList.SelectedItem as ProfileView)?.Profile;
-
-        private void UseProfileBtn_Click(object sender, RoutedEventArgs e)
-        {
-            if (SelectedProfile is not { } profile)
-            {
-                StatusText.Text = "Önce listeden bir profil seç.";
-                return;
-            }
-            SetActiveProfile(profile);
-            StatusText.Text = $"Aktif profil: {profile.Name}";
-        }
-
-        private void ProfilesList_MouseDoubleClick(object sender, MouseButtonEventArgs e) => UseProfileBtn_Click(sender, e);
-
-        private void OpenProfileFolderBtn_Click(object sender, RoutedEventArgs e)
-        {
-            var profile = SelectedProfile ?? ActiveProfile;
-            Directory.CreateDirectory(profile.GameDirectory);
-            OpenPath(profile.GameDirectory);
-        }
-
-        private void DeleteProfileBtn_Click(object sender, RoutedEventArgs e)
-        {
-            if (SelectedProfile is not { } profile)
-            {
-                StatusText.Text = "Önce listeden silinecek profili seç.";
-                return;
-            }
-            if (_isBusy || (_gameProcess is { HasExited: false } && profile.Id == ActiveProfile.Id))
-            {
-                StatusText.Text = "İşlem sürerken ya da oyun açıkken profil silinemez.";
-                return;
-            }
-
-            bool insideLauncher = profile.GameDirectory.StartsWith(_core.Paths.InstancesDir, StringComparison.OrdinalIgnoreCase);
-            string detail = insideLauncher
-                ? "Profilin klasörü, içindeki modlar ve DÜNYALARIN (kayıtların) da silinecek!"
-                : $"Profil listeden kaldırılacak; klasörü ({profile.GameDirectory}) yerinde bırakılacak.";
-            if (MessageBox.Show($"'{profile.Name}' silinsin mi?\n\n{detail}", "Profili sil",
-                    MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes)
-                return;
-
-            try
-            {
-                _core.Profiles.Delete(profile, deleteGameFiles: true);
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show("Profil klasörü tamamen silinemedi: " + ex.Message, "Hata", MessageBoxButton.OK, MessageBoxImage.Warning);
-            }
-
-            if (profile.Id == ActiveProfile.Id) SetActiveProfile(_core.EnsureActiveProfile());
-            else RefreshProfiles();
-            StatusText.Text = $"'{profile.Name}' silindi.";
-        }
-
-        private void CreateProfileBtn_Click(object sender, RoutedEventArgs e)
-        {
-            string name = NewProfileNameBox.Text.Trim();
-            string version = NewProfileVersionCombo.Text.Trim();
-            var loader = (NewProfileLoaderCombo.SelectedItem as LoaderOption)?.Loader ?? ModLoader.Fabric;
-
-            if (name.Length == 0 || version.Length == 0)
-            {
-                MessageBox.Show("Profil adı ve Minecraft sürümü boş olamaz.", "Eksik bilgi", MessageBoxButton.OK, MessageBoxImage.Information);
-                return;
-            }
-            if (NewProfileVersionCombo.ItemsSource is IEnumerable<string> known && known.Any() && !known.Contains(version))
-            {
-                MessageBox.Show($"'{version}' diye bir Minecraft sürümü bulunamadı. Listeden seçebilirsin.", "Sürüm", MessageBoxButton.OK, MessageBoxImage.Information);
-                return;
-            }
-
-            var profile = _core.Profiles.Create(name, version, loader);
-            NewProfileNameBox.Text = "";
-            SetActiveProfile(profile);
-            StatusText.Text = $"✓ '{profile.Name}' oluşturuldu ve aktif yapıldı. Keşfet'ten mod ekleyebilirsin.";
-        }
-
-        private async void ImportMrpackBtn_Click(object sender, RoutedEventArgs e)
-        {
-            var dialog = new OpenFileDialog { Filter = "Modrinth paketi (*.mrpack)|*.mrpack", Title = "Paket dosyası seç" };
-            if (dialog.ShowDialog(this) != true) return;
-
-            ModpackInstallResult? result = null;
-            bool ok = await RunBusyAsync("Paket içe aktarılıyor...",
-                async (progress, ct) => result = await _core.Modpacks.InstallLocalMrpackAsync(dialog.FileName, progress, ct));
-            if (ok && result != null) ShowModpackResult(result);
-        }
-
-        private async Task LoadGameVersionsAsync()
-        {
-            IReadOnlyList<string> versions;
-            try
-            {
-                versions = await _core.GameVersions.GetReleaseVersionsAsync();
-            }
-            catch
-            {
-                versions = FallbackGameVersions;
-            }
-            NewProfileVersionCombo.ItemsSource = versions;
-            NewProfileVersionCombo.Text = Settings.DefaultGameVersion;
-        }
-
-        // ==================== AYARLAR ====================
-
-        private void LoadSettingsIntoUi()
-        {
-            var s = Settings;
-            long total = RamAdvisor.TotalSystemMb();
-            RamSlider.Maximum = Math.Max(1024, RamAdvisor.MaxAllowed(total) / 512 * 512);
-            RamSlider.Value = Math.Min(s.ManualRamMb, RamSlider.Maximum);
-            RamAutoRadio.IsChecked = s.RamMode == RamMode.Auto;
-            RamManualRadio.IsChecked = s.RamMode == RamMode.Manual;
-            ParallelSlider.Value = s.MaxParallelDownloads;
-            HideLauncherCheck.IsChecked = s.HideLauncherWhilePlaying;
-            CurseForgeKeyBox.Text = s.CurseForgeApiKey ?? "";
-            DataFolderText.Text = $"Profiller ve oyun dosyaları: {_core.Paths.Root}";
-            UpdateRamInfo();
-        }
-
-        private void UpdateRamInfo()
-        {
-            if (RamInfoText == null || _activeProfile == null) return;
-            long total = RamAdvisor.TotalSystemMb();
-            bool manual = RamManualRadio.IsChecked == true;
-            RamManualPanel.IsEnabled = manual;
-            RamManualPanel.Opacity = manual ? 1 : 0.4;
-
-            var autoSettings = new AppSettings { RamMode = RamMode.Auto };
-            int auto = RamAdvisor.Decide(autoSettings, ActiveProfile, total);
-            RamInfoText.Text = $"Bilgisayarında {total / 1024.0:0.#} GB RAM var. Otomatik modda '{ActiveProfile.Name}' için {auto / 1024.0:0.#} GB kullanılır " +
-                               "(mod sayısına ve paketin önerisine göre ayarlanır, Windows'a her zaman pay bırakılır).";
-            RamValueText.Text = $"{RamSlider.Value / 1024:0.#} GB";
-        }
-
-        private void RamMode_Changed(object sender, RoutedEventArgs e) => UpdateRamInfo();
-
-        private void RamSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
-        {
-            if (RamValueText != null) RamValueText.Text = $"{e.NewValue / 1024:0.#} GB";
-        }
-
-        private void ParallelSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
-        {
-            if (ParallelValueText != null) ParallelValueText.Text = $"{(int)e.NewValue} dosya";
-        }
-
-        private void SaveSettingsBtn_Click(object sender, RoutedEventArgs e)
-        {
-            var s = Settings;
-            s.RamMode = RamManualRadio.IsChecked == true ? RamMode.Manual : RamMode.Auto;
-            s.ManualRamMb = (int)RamSlider.Value;
-            s.MaxParallelDownloads = (int)ParallelSlider.Value;
-            s.HideLauncherWhilePlaying = HideLauncherCheck.IsChecked == true;
-            s.CurseForgeApiKey = string.IsNullOrWhiteSpace(CurseForgeKeyBox.Text) ? null : CurseForgeKeyBox.Text.Trim();
-            _core.Settings.Save();
-
-            RefreshProviders(); // CurseForge anahtarı eklendiyse kaynak listesinde görünsün
-            StatusText.Text = "✓ Ayarlar kaydedildi.";
-        }
-
-        private void OpenDataFolderBtn_Click(object sender, RoutedEventArgs e) => OpenPath(_core.Paths.Root);
-
-        // ==================== ORTAK YARDIMCILAR ====================
-
-        private async Task<bool> RunBusyAsync(string startMessage, Func<IProgress<ProgressInfo>, CancellationToken, Task> work)
+        public async Task<bool> RunBusyAsync(string startMessage, Func<IProgress<ProgressInfo>, CancellationToken, Task> work)
         {
             if (_isBusy)
             {
-                StatusText.Text = "Önce devam eden işlemin bitmesini bekle.";
+                Notify("Önce devam eden işin bitmesini bekle.");
                 return false;
             }
 
@@ -819,13 +644,12 @@ namespace MinecraftModder
             }
             catch (OperationCanceledException) when (cts.IsCancellationRequested)
             {
-                StatusText.Text = "İşlem iptal edildi.";
+                Notify("İşlem iptal edildi.");
                 return false;
             }
             catch (Exception ex)
             {
-                StatusText.Text = "Bir sorun oluştu.";
-                MessageBox.Show(FriendlyMessage(ex), "Hata", MessageBoxButton.OK, MessageBoxImage.Error);
+                await AskAsync("Bir sorun oldu", FriendlyMessage(ex), "Tamam");
                 return false;
             }
             finally
@@ -846,39 +670,45 @@ namespace MinecraftModder
             if (!important && (now - _lastProgressUpdate).TotalMilliseconds < 40) return;
             _lastProgressUpdate = now;
 
-            StatusText.Text = info.Message;
+            ToastText.Text = info.Message;
             BusyProgress.IsIndeterminate = info.Fraction == null;
             if (info.Fraction is { } f) BusyProgress.Value = f;
+            if (_launching) PlayBlock.SetState(info.Fraction is { } p and < 1 ? $"%{p * 100:0}" : "Hazırlanıyor", spinDisc: true);
         }
 
         private void SetBusyUi(bool busy)
         {
-            PlayBtn.IsEnabled = !busy && _gameProcess is not { HasExited: false };
-            CreateProfileBtn.IsEnabled = !busy;
-            BusyProgress.Visibility = busy ? Visibility.Visible : Visibility.Hidden;
+            BusyProgress.Visibility = busy ? Visibility.Visible : Visibility.Collapsed;
             CancelBtn.Visibility = busy ? Visibility.Visible : Visibility.Collapsed;
-            if (!busy) BusyProgress.IsIndeterminate = false;
+            if (busy)
+            {
+                _toastTimer.Stop();
+                ShowToast();
+            }
+            else
+            {
+                BusyProgress.IsIndeterminate = false;
+                _toastTimer.Start();
+            }
         }
 
         private void CancelBtn_Click(object sender, RoutedEventArgs e)
         {
             _busyCts?.Cancel();
-            StatusText.Text = "İptal ediliyor...";
+            ToastText.Text = "İptal ediliyor...";
         }
 
-        private void Window_Closing(object? sender, System.ComponentModel.CancelEventArgs e)
+        private async void Window_Closing(object? sender, System.ComponentModel.CancelEventArgs e)
         {
-            if (!_isBusy) return;
-            if (MessageBox.Show("Bir işlem hâlâ devam ediyor. Yine de kapatılsın mı?", "Çıkış",
-                    MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes)
-            {
-                e.Cancel = true;
-                return;
-            }
+            if (!_isBusy || _closeConfirmed) return;
+            e.Cancel = true;
+            if (await AskAsync("Bir iş hâlâ sürüyor", "Yine de kapatılsın mı? Yarım kalan indirme bir sonraki seferde tamamlanır.", "Kapat", "Bekle") != 0) return;
+            _closeConfirmed = true;
             _busyCts?.Cancel();
+            Close();
         }
 
-        private static string FriendlyMessage(Exception ex) => ex switch
+        public string FriendlyMessage(Exception ex) => ex switch
         {
             HttpRequestException => "İnternete bağlanılamadı ya da sunucu cevap vermedi. Bağlantını kontrol edip tekrar dene.",
             TaskCanceledException or TimeoutException => "Sunucu çok geç cevap verdi. Biraz sonra tekrar dene.",
@@ -887,7 +717,7 @@ namespace MinecraftModder
             _ => ex.Message
         };
 
-        private static void OpenPath(string pathOrUrl)
+        public void OpenPath(string pathOrUrl)
         {
             try
             {
@@ -895,8 +725,25 @@ namespace MinecraftModder
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"Açılamadı: {ex.Message}", "Hata", MessageBoxButton.OK, MessageBoxImage.Warning);
+                Notify($"Açılamadı: {ex.Message}");
             }
         }
+
+        // Pencerenin başlık çubuğu da koyu olsun (Windows 10 20H1+ / 11).
+        private void Window_SourceInitialized(object? sender, EventArgs e)
+        {
+            try
+            {
+                int dark = 1;
+                DwmSetWindowAttribute(new WindowInteropHelper(this).Handle, 20, ref dark, sizeof(int));
+            }
+            catch
+            {
+                // Eski Windows: başlık çubuğu açık renk kalır, sorun değil.
+            }
+        }
+
+        [DllImport("dwmapi.dll")]
+        private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int size);
     }
 }

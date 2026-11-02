@@ -1,0 +1,85 @@
+<UserControl x:Class="MinecraftModder.Views.SettingsPage"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <!-- Ayarlar değiştiği anda kaydedilir; "Kaydet" butonu yok. -->
+    <ScrollViewer VerticalScrollBarVisibility="Auto" PanningMode="VerticalOnly">
+        <StackPanel Margin="40,28,24,40" MaxWidth="720" HorizontalAlignment="Left">
+            <TextBlock Text="Ayarlar" Style="{StaticResource H1}"/>
+            <TextBlock Text="Değiştirdiğin her şey hemen kaydedilir." Style="{StaticResource Muted}" Margin="0,4,0,22"/>
+
+            <Border Style="{StaticResource Panel}" Margin="0,0,0,16">
+                <StackPanel>
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="&#xE950;" Style="{StaticResource Icon}" FontSize="18" Foreground="{StaticResource AccentBrush}" Margin="0,0,10,0"/>
+                        <TextBlock Text="Bellek (RAM)" Style="{StaticResource H2}"/>
+                    </StackPanel>
+                    <TextBlock x:Name="RamInfoText" Style="{StaticResource Muted}" Margin="0,8,0,14"/>
+                    <CheckBox x:Name="RamManualSwitch" Style="{StaticResource Switch}" Content="Kendim ayarlayacağım" Click="RamManualSwitch_Click"/>
+                    <Grid x:Name="RamManualPanel" Margin="0,14,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="80"/>
+                        </Grid.ColumnDefinitions>
+                        <Slider x:Name="RamSlider" Minimum="1024" Maximum="8192" TickFrequency="512" IsSnapToTickEnabled="True" ValueChanged="RamSlider_ValueChanged"/>
+                        <TextBlock x:Name="RamValueText" Grid.Column="1" Foreground="{StaticResource TextBrush}" FontWeight="Bold" FontSize="15" HorizontalAlignment="Right" VerticalAlignment="Center"/>
+                    </Grid>
+                </StackPanel>
+            </Border>
+
+            <Border Style="{StaticResource Panel}" Margin="0,0,0,16">
+                <StackPanel>
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="&#xE896;" Style="{StaticResource Icon}" FontSize="18" Foreground="{StaticResource GrassBrush}" Margin="0,0,10,0"/>
+                        <TextBlock Text="İndirme" Style="{StaticResource H2}"/>
+                    </StackPanel>
+                    <TextBlock Text="Aynı anda inecek dosya sayısı. İnternetin yavaşsa azalt." Style="{StaticResource Muted}" Margin="0,8,0,14"/>
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="80"/>
+                        </Grid.ColumnDefinitions>
+                        <Slider x:Name="ParallelSlider" Minimum="1" Maximum="16" TickFrequency="1" IsSnapToTickEnabled="True" ValueChanged="ParallelSlider_ValueChanged"/>
+                        <TextBlock x:Name="ParallelValueText" Grid.Column="1" Foreground="{StaticResource TextBrush}" FontWeight="Bold" FontSize="15" HorizontalAlignment="Right" VerticalAlignment="Center"/>
+                    </Grid>
+                </StackPanel>
+            </Border>
+
+            <Border Style="{StaticResource Panel}" Margin="0,0,0,16">
+                <StackPanel>
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="&#xE7FC;" Style="{StaticResource Icon}" FontSize="18" Foreground="{StaticResource YellowBrush}" Margin="0,0,10,0"/>
+                        <TextBlock Text="Oyun" Style="{StaticResource H2}"/>
+                    </StackPanel>
+                    <CheckBox x:Name="HideLauncherSwitch" Style="{StaticResource Switch}" Content="Oyun açıkken başlatıcıyı küçült" Margin="0,14,0,0" Click="HideLauncherSwitch_Click"/>
+                </StackPanel>
+            </Border>
+
+            <Border Style="{StaticResource Panel}" Margin="0,0,0,16">
+                <StackPanel>
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="&#xE8D7;" Style="{StaticResource Icon}" FontSize="18" Foreground="{StaticResource OrangeBrush}" Margin="0,0,10,0"/>
+                        <TextBlock Text="CurseForge (isteğe bağlı)" Style="{StaticResource H2}"/>
+                    </StackPanel>
+                    <TextBlock Style="{StaticResource Muted}" Margin="0,8,0,12"
+                               Text="CurseForge modları ve paketleri anahtarsız da çalışır. Anahtar girersen (console.curseforge.com, ücretsiz) CurseForge'daki shader ve kaynak paketleri de aranır."/>
+                    <TextBox x:Name="CurseForgeKeyBox" LostFocus="CurseForgeKeyBox_LostFocus"/>
+                </StackPanel>
+            </Border>
+
+            <Border Style="{StaticResource Panel}">
+                <StackPanel>
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="&#xE77B;" Style="{StaticResource Icon}" FontSize="18" Foreground="{StaticResource PinkBrush}" Margin="0,0,10,0"/>
+                        <TextBlock Text="Hesap ve dosyalar" Style="{StaticResource H2}"/>
+                    </StackPanel>
+                    <TextBlock x:Name="AccountText" Style="{StaticResource Muted}" Margin="0,8,0,4"/>
+                    <TextBlock x:Name="DataFolderText" Style="{StaticResource Muted}" Margin="0,0,0,14"/>
+                    <WrapPanel>
+                        <Button Content="Veri klasörünü aç" Style="{StaticResource SoftBtn}" Click="OpenDataFolder_Click"/>
+                        <Button Content="Hesaptan çık" Style="{StaticResource RedBtn}" Click="SignOut_Click"/>
+                    </WrapPanel>
+                </StackPanel>
+            </Border>
+        </StackPanel>
+    </ScrollViewer>
+</UserControl>
